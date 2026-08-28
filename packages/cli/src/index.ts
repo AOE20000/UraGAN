@@ -211,6 +211,31 @@ shared
     for (const k of keys) console.log(`${k} = ${JSON.stringify(config.$shared[k])}`);
   });
 
+/* ========== 组件 ========== */
+const component = program.command('component').description('全局组件操作');
+component
+  .command('list')
+  .description('列出全局组件')
+  .action((_opts: unknown, cmd: Command) => {
+    const file = loadFile(requireProject(cmd.optsWithGlobals()));
+    const list = file.components ?? [];
+    if (list.length === 0) return console.log('（无组件）');
+    for (const c of list) console.log(`${c.componentId}  ${c.name}  （$defs ${Object.keys(c.$defs).length} 项）`);
+  });
+component
+  .command('inline <pageId> <componentId>')
+  .description('复制代码到页面：组件 code/$defs 并入目标页，断开父子关系')
+  .action((pageId: string, componentId: string, _opts: unknown, cmd: Command) => {
+    const target = requireProject(cmd.optsWithGlobals());
+    const { file, report } = Uragan.inlineComponent(loadFile(target), pageId, componentId);
+    const errors = report.errors.filter((e) => e.severity === 'error');
+    if (errors.length > 0) return reportOut(report, '');
+    writeProjectFile(target, file);
+    const warns = report.errors.filter((e) => e.severity === 'warning');
+    console.log(`已内联组件 ${componentId} → 页 ${pageId}`);
+    for (const w of warns) console.log(`⚠ [${w.code}] ${w.message} @${w.path}`);
+  });
+
 /* ========== 6 渲染（M4） ========== */
 program
   .command('render')

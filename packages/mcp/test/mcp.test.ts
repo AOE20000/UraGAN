@@ -2,8 +2,11 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { Uragan, readProjectFile, writeProjectFile } from '@uragan/core';
 import {
   assetsCheck,
+  componentInline,
+  componentList,
   copyExport,
   copyImport,
   listPages,
@@ -136,6 +139,39 @@ describe('MCP 端到端（模拟 Agent 走完 6 步）', () => {
     expect(JSON.parse(back.text).name).toBe('开场页（已改）');
     // pageId 不一致 → 拒绝
     expect(pageOverwrite({ path: project, pageId: 'p999', pageJson: JSON.stringify(page) }).ok).toBe(false);
+  });
+
+  it('组件：component_list 与 component_inline（复制代码到页面）', () => {
+    // 给工程注入一个组件 + 页面引用
+    const file = readProjectFile(project).file;
+    file.components = [
+      {
+        schemaVersion: '1',
+        componentId: 'card_feature',
+        name: '特性卡片',
+        $defs: { color_primary: { type: 'color', value: '#FF0000' }, spacing_card: { type: 'spacing', value: 16 } },
+        code: { nodeType: 'flex', text: '标题 {slot.title}', padding: '{slot.pad}' },
+      },
+    ] as (typeof file)['components'];
+    writeProjectFile(project, file);
+
+    const list = componentList(project);
+    expect(list.ok).toBe(true);
+    expect(list.text).toContain('card_feature');
+
+    // 页面引用该组件（当前顺序 p02 → p01）
+    const f2 = readProjectFile(project).file;
+    f2.pages[0]!.content.card = { cid: 'c0099', component: 'card_feature', slot: { title: '你好', pad: 8 } };
+    writeProjectFile(project, f2);
+
+    const r = componentInline({ path: project, pageId: 'p02_feature', componentId: 'card_feature' });
+    expect(r.ok).toBe(true);
+    expect(r.text).toContain('已内联');
+    // 冲突定义被重命名（README：color_primary → color_primary_p02_feature）；插槽数字保持类型
+    const after = readProjectFile(project).file;
+    const page = after.pages.find((p) => p.pageId === 'p02_feature')!;
+    expect(page.$defs.color_primary_p02_feature).toEqual({ type: 'color', value: '#FF0000' });
+    expect((page.content.card as { value?: unknown }).value).toEqual({ nodeType: 'flex', text: '标题 你好', padding: 8 });
   });
 
   it('assets_check：本地缺失 → 失败', async () => {

@@ -3,6 +3,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import {
   assetsCheck,
+  componentInline,
+  componentList,
   copyExport,
   copyImport,
   listPages,
@@ -102,6 +104,15 @@ function registerAll(server: McpServer): void {
   );
 
   reg('shared_pool', '查看共享池 $shared（dedup 导出投影）', { path: pathOpt() }, (a: { path?: string }) => sharedPool(a.path));
+
+  reg('component_list', '列出全局组件', { path: pathOpt() }, (a: { path?: string }) => componentList(a.path));
+
+  reg(
+    'component_inline',
+    '复制代码到页面：组件 code/$defs 并入目标页，断开父子关系',
+    { path: pathOpt(), pageId: z.string(), componentId: z.string() },
+    (a: { path?: string; pageId: string; componentId: string }) => componentInline(a),
+  );
 
   reg(
     'assets_check',

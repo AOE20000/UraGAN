@@ -208,7 +208,7 @@ export function copyImport(a: CopyImportArgs): ToolResult {
   return ok('文案填充完成');
 }
 
-/* ---------------- 共享池 / 资产 / 渲染 ---------------- */
+/* ---------------- 共享池 / 资产 / 渲染 / 组件 ---------------- */
 
 export function sharedPool(path = 'project.uragan'): ToolResult {
   const r = load(path);
@@ -218,6 +218,37 @@ export function sharedPool(path = 'project.uragan'): ToolResult {
   const keys = Object.keys(config.$shared);
   if (keys.length === 0) return ok('（空）');
   return ok(keys.map((k) => `${k} = ${JSON.stringify(config.$shared[k])}`).join('\n'));
+}
+
+export function componentList(path = 'project.uragan'): ToolResult {
+  const r = load(path);
+  if (!r.ok) return r;
+  const list = r.file.components ?? [];
+  if (list.length === 0) return ok('（无组件）');
+  return ok(
+    list
+      .map((c) => ({ componentId: c.componentId, name: c.name, defs: Object.keys(c.$defs).length }))
+      .map((c) => `${c.componentId}  ${c.name}  （$defs ${c.defs} 项）`)
+      .join('\n'),
+  );
+}
+
+export interface ComponentInlineArgs {
+  path?: string;
+  pageId: string;
+  componentId: string;
+}
+/** 「复制代码到页面」：组件 code/$defs 并入目标页并断开引用（README 组件哲学） */
+export function componentInline(a: ComponentInlineArgs): ToolResult {
+  const r = load(a.path ?? 'project.uragan');
+  if (!r.ok) return r;
+  const { file, report } = Uragan.inlineComponent(r.file, a.pageId, a.componentId);
+  if (!report.ok) return fail(reportText(report, '内联失败'));
+  writeProjectFile(withProjectExt(a.path ?? 'project.uragan'), file);
+  const warns = report.errors.filter((e) => e.severity === 'warning');
+  return warns.length > 0
+    ? ok(`已内联组件 ${a.componentId} → 页 ${a.pageId}\n⚠ ${warns.map((w) => `[${w.code}] ${w.message}`).join('\n⚠ ')}`)
+    : ok(`已内联组件 ${a.componentId} → 页 ${a.pageId}`);
 }
 
 export interface RenderVideoArgs {

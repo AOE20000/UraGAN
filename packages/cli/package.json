@@ -1,0 +1,31 @@
+{
+  "name": "@uragan/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "uragan": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@uragan/core": "workspace:*",
+    "@uragan/mcp": "workspace:*",
+    "@uragan/render": "workspace:*",
+    "@uragan/shared": "workspace:*",
+    "commander": "^12.1.0"
+  }
+}

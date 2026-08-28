@@ -1,0 +1,20 @@
+{
+  "name": "uragan",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "面向普通用户的 AI 动画视频生成框架：选页面、填文案、导出视频",
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

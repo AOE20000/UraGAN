@@ -91,9 +91,9 @@ function registerAll(server: McpServer): void {
 
   reg(
     'copy_export',
-    '导出待填充文案框架（步骤4）',
-    { path: pathOpt(), out: pathOpt() },
-    (a: { path?: string; out?: string }) => copyExport(a),
+    '导出待填充文案框架（format=json 权威形态，format=md 人读文本框架）',
+    { path: pathOpt(), out: pathOpt(), format: z.enum(['json', 'md']).optional() },
+    (a: { path?: string; out?: string; format?: 'json' | 'md' }) => copyExport(a),
   );
 
   reg(

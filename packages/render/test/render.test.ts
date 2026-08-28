@@ -3,8 +3,10 @@ import type { ContentField } from '@uragan/shared';
 import type { ProjectFile } from '@uragan/shared';
 import type { SceneNode } from '../src/types.js';
 import { checkAssets } from '../src/assets.js';
+import { vendoredBrowserPath } from '../src/browser.js';
 import { pageDuration, totalDuration } from '../src/duration.js';
 import { translateProject } from '../src/translate.js';
+import { progressFromFrames } from '../src/progress.js';
 
 function sampleFile(): ProjectFile {
   return {
@@ -120,6 +122,25 @@ describe('时长推导（duration.ts）', () => {
   });
   it('totalDuration = 各页之和', () => {
     expect(totalDuration(sampleFile())).toBeCloseTo(8.7);
+  });
+});
+
+describe('离线浏览器内置（browser.ts）', () => {
+  it('vendoredBrowserPath 命中包内 vendor 的 chrome-headless-shell', () => {
+    const p = vendoredBrowserPath({});
+    expect(p).toBeTruthy();
+    expect(p!.toLowerCase()).toContain('chrome-headless-shell');
+    expect(p!.toLowerCase()).toContain('vendor');
+  });
+});
+
+describe('渲染进度（progress.ts）', () => {
+  it('按帧映射 0-1；总帧未知为 0；封顶 1', () => {
+    expect(progressFromFrames({ renderedFrames: 25, totalFrames: 100 })).toBe(0.25);
+    expect(progressFromFrames({ encodedFrames: 100, totalFrames: 100 })).toBe(1);
+    expect(progressFromFrames({})).toBe(0);
+    expect(progressFromFrames({ renderedFrames: 200, totalFrames: 100 })).toBe(1);
+    expect(progressFromFrames({ renderedFrames: 0, totalFrames: 0 })).toBe(0);
   });
 });
 

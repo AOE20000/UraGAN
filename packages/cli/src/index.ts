@@ -7,6 +7,8 @@ import {
   Uragan,
   blankFile,
   exportSkeleton,
+  exportSkeletonText,
+  parseSkeletonText,
   readProjectFile,
   withProjectExt,
   writeProjectFile,
@@ -172,10 +174,18 @@ page
 const copy = program.command('copy').description('文案框架');
 copy
   .command('export')
-  .description('导出待填充文案框架')
+  .description('导出待填充文案框架（JSON / Markdown 文本形态）')
   .option('-o, --out <path>', '输出路径', 'skeleton.json')
-  .action((opts: { out: string }, cmd: Command) => {
+  .option('--format <json|md>', '输出格式：json（默认）或 md（人读文本框架）', 'json')
+  .action((opts: { out: string; format: string }, cmd: Command) => {
     const file = loadFile(requireProject(cmd.optsWithGlobals()));
+    if (opts.format === 'md') {
+      const { text } = exportSkeletonText(file);
+      writeFileSync(opts.out, text, 'utf8');
+      const n = text.split('\n').filter((l) => /^\| c/.test(l)).length;
+      console.log(`已导出文本文案框架（${n} 个占位符）→ ${opts.out}`);
+      return;
+    }
     const { skeleton } = exportSkeleton(file);
     writeFileSync(opts.out, JSON.stringify(skeleton, null, 2) + '\n', 'utf8');
     const n = skeleton.pages.reduce((s, p) => s + p.items.length, 0);
@@ -183,13 +193,16 @@ copy
   });
 copy
   .command('import <file>')
-  .description('导入已填充文案框架')
-  .action((file: string, cmd: Command) => {
+  .description('导入已填充文案框架（自动识别 JSON / Markdown 文本）')
+  .action((file: string, _opts: unknown, cmd: Command) => {
+    const raw = readFileSync(file, 'utf8');
     let skeleton;
     try {
-      skeleton = JSON.parse(readFileSync(file, 'utf8'));
+      skeleton = JSON.parse(raw);
     } catch {
-      return reportOut(issues([C('U-1001', `解析 ${file} 失败`)]), '');
+      const parsed = parseSkeletonText(raw);
+      if (!parsed.report.ok) return reportOut(parsed.report, '');
+      skeleton = parsed.skeleton;
     }
     const target = requireProject(cmd.optsWithGlobals());
     const { file: next, report } = Uragan.applySkeleton(loadFile(target), skeleton);
@@ -245,12 +258,16 @@ program
   .action(async (out: string, opts: { codec: string }, cmd: Command) => {
     const target = requireProject(cmd.optsWithGlobals());
     const file = loadFile(target);
-    const { renderProject } = await import('@uragan/render');
+    const { renderProject, vendoredBrowserPath } = await import('@uragan/render');
+    const baked = vendoredBrowserPath();
+    if (baked) console.log(`✓ 使用内置浏览器（离线渲染可用）：${baked}`);
+    else console.log('⚠ 未发现内置浏览器，渲染将尝试联网下载 Chrome Headless Shell');
     try {
       const { output, durationSeconds } = await renderProject(file, {
         output: out,
         projectDir: dirname(target),
         codec: opts.codec as 'h264' | 'h265' | 'vp8' | 'vp9',
+        verbose: true,
       });
       console.log(`✓ 渲染完成 → ${output}（${durationSeconds.toFixed(1)}s）`);
     } catch (e) {
@@ -272,6 +289,15 @@ program
     if (issues.length === 0) return console.log('✓ 资产引用全部有效');
     for (const i of issues) console.log(`${i.severity === 'error' ? '[error]' : '[warn ]'} [${i.code}] ${i.message} @${i.path}`);
     if (!ok) process.exitCode = 1;
+  });
+
+program
+  .command('tui')
+  .description('启动交互式终端界面（TUI，当前窗口渲染）')
+  .action(async (_opts: unknown, cmd: Command) => {
+    const target = requireProject(cmd.optsWithGlobals());
+    const { launchTui } = await import('./tui/index.js');
+    process.exitCode = await launchTui(target);
   });
 
 program

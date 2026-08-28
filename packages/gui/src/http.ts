@@ -11,6 +11,8 @@ export interface ReqCtx {
   url: URL;
   query: URLSearchParams;
   json: () => Promise<unknown>;
+  /** 原始请求体文本 */
+  text: () => Promise<string>;
 }
 
 export interface HttpResponse {
@@ -27,8 +29,12 @@ export type Handler = ((req: ReqCtx) => HttpResponse | Promise<HttpResponse>) | 
 function send(res: ServerResponse, r: HttpResponse, req?: IncomingMessage): void {
   if (r.file) {
     const { path, mime } = r.file;
-    if (!req || req.method === 'GET') {
-      res.writeHead(r.status, { 'Content-Type': mime, 'Cache-Control': 'no-store' });
+    if (!req || req.method === 'GET' || req.method === 'HEAD') {
+      res.writeHead(r.status, { 'Content-Type': mime, 'Cache-Control': 'no-store', 'Accept-Ranges': 'bytes' });
+      if (req?.method === 'HEAD') {
+        res.end();
+        return;
+      }
       createReadStream(path).pipe(res);
       return;
     }
@@ -73,6 +79,16 @@ export function createHttp(): HttpServer {
           });
           req.on('error', reject);
         }),
+      text: () =>
+        new Promise<string>((ok, reject) => {
+          let data = '';
+          req.on('data', (c: Buffer) => {
+            data += c;
+            if (data.length > 128 * 1024 * 1024) reject(new Error('请求体过大'));
+          });
+          req.on('end', () => ok(data));
+          req.on('error', reject);
+        }),
     };
 
     let handled = false;
@@ -87,7 +103,7 @@ export function createHttp(): HttpServer {
         return;
       }
     }
-    if (req.method === 'GET') {
+    if (req.method === 'GET' || req.method === 'HEAD') {
       for (const s of streams) {
         if (ctx.pathname.startsWith(s.prefix)) {
           const found = s.handler(ctx);

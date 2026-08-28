@@ -1,0 +1,57 @@
+{
+  "schemaVersion": "1",
+  "pageId": "p02_feature",
+  "name": "特性页",
+  "kind": "grid",
+  "$defs": {
+    "color_primary": {
+      "type": "color",
+      "value": "#4F46E5"
+    },
+    "font_title": {
+      "type": "font",
+      "family": "Noto Sans SC",
+      "weight": 800
+    }
+  },
+  "content": {
+    "title": {
+      "cid": "c0011",
+      "copy": true,
+      "ref": "defs/font_title",
+      "kind": "text",
+      "value": "核心特性"
+    },
+    "card1_title": {
+      "cid": "c0012",
+      "copy": true,
+      "kind": "text",
+      "value": "超快渲染"
+    },
+    "card1_desc": {
+      "cid": "c0013",
+      "copy": true,
+      "kind": "text",
+      "value": "Remotion 逐帧精确"
+    },
+    "card2_title": {
+      "cid": "c0014",
+      "copy": true,
+      "kind": "text",
+      "value": "配置驱动"
+    },
+    "card2_desc": {
+      "cid": "c0015",
+      "copy": true,
+      "kind": "text",
+      "value": "设计与内容解耦"
+    },
+    "bgColor": {
+      "cid": "c0016",
+      "ref": "defs/color_primary",
+      "kind": "color",
+      "value": "uragan tui"
+    }
+  },
+  "animations": []
+}

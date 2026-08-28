@@ -3,7 +3,7 @@ import { createHttp } from './http.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Uragan, readProjectFile, withProjectExt, writeProjectFile } from '@uragan/core';
+import { Uragan, exportSkeletonText, parseSkeletonText, readProjectFile, withProjectExt, writeProjectFile } from '@uragan/core';
 import type { CopySkeleton, ValidationReport } from '@uragan/shared';
 
 export { withProjectExt };
@@ -82,8 +82,23 @@ export async function startGui(opts: GuiOptions): Promise<{ port: number; url: s
   /* ---------- 文案框架 ---------- */
   server.get('/api/skeleton', () => ({ status: 200, body: Uragan.exportSkeleton(load()).skeleton }));
 
+  server.get('/api/skeleton/md', () => {
+    // Markdown 文本框架（§3.9 人读表单）
+    const { text } = exportSkeletonText(load());
+    return { status: 200, body: text, type: 'html' as const };
+  });
+
   server.post('/api/skeleton', async (req) => {
-    const skeleton = (await req.json()) as CopySkeleton;
+    // 自动探测：JSON（权威形态）或 Markdown 文本框架
+    const raw = await req.text();
+    let skeleton: CopySkeleton;
+    try {
+      skeleton = JSON.parse(raw) as CopySkeleton;
+    } catch {
+      const parsed = parseSkeletonText(raw);
+      if (!parsed.report.ok) return { status: 400, body: parsed.report };
+      skeleton = parsed.skeleton;
+    }
     const { file, report } = Uragan.applySkeleton(load(), skeleton);
     if (!report.ok) return bad(report);
     save(file);

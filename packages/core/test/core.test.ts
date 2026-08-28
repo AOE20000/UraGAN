@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ExchangeConfig, Page, ProjectFile } from '@uragan/shared';
 import { SCHEMA_VERSION } from '@uragan/shared';
-import { Uragan, expandExchange, registerMigration, validateProjectFile, validateExchange } from '../src/index.js';
+import { Uragan, expandExchange, exportSkeletonText, parseSkeletonText, registerMigration, validateProjectFile, validateExchange } from '../src/index.js';
 
 /** 构造一个标准交换配置：$shared + 两页，页面引用共享键 */
 function sampleExchange(): ExchangeConfig {
@@ -279,5 +279,92 @@ describe('M6 打磨：JSONC 输入 + schemaVersion 迁移器', () => {
     const { report } = Uragan.importFromText(JSON.stringify(cfg));
     expect(report.ok).toBe(false);
     expect(report.errors.some((e) => e.code === 'U-1009')).toBe(true);
+  });
+});
+
+describe('文案框架文本形态（§3.9 Markdown 兼容层）', () => {
+  function fileWith(): ProjectFile {
+    const f = toFile(sampleExchange());
+    // 多行 number 字段，便于围栏验证
+    f.pages[0]!.content.count = { cid: 'c0042', copy: true, kind: 'number', value: 42 };
+    f.pages[1]!.content.desc = { cid: 'c0043', copy: true, kind: 'text', value: undefined };
+    return f;
+  }
+
+  it('导出 Markdown 无 JSON 符号：表格 + 中文列 + 填写空列; 占位符数一致', () => {
+    const { text, report } = exportSkeletonText(fileWith());
+    expect(report.ok).toBe(true);
+    expect(text).toContain('# 文案框架');
+    expect(text).toContain('## 页面 p01_home · 开场页（hero）');
+    expect(text).toContain('| c0001 |');
+    // 无花括号/双引号语法（占位内容里的引号除外——样例无）
+    expect(text).not.toMatch(/[{}]/);
+    expect(text.split('\n').filter((l) => /^\| c/.test(l))).toHaveLength(4); // c0001 c0011 c0042 c0043
+  });
+
+  /** 定位某 cid 的数据行，把行尾「填写」列替换为 fillCell */
+  function fillRow(text: string, cid: string, fillCell: string): string {
+    const line = text.split('\n').find((l) => l.startsWith(`| ${cid} |`));
+    if (!line) throw new Error(`未找到 cid=${cid} 行`);
+    const idx = line.lastIndexOf('|');
+    const done = line.slice(0, idx) + ` ${fillCell} |`;
+    return text.replace(line, done);
+  }
+
+  it('往返不变量：填 单行值 → 解析 → applySkeleton 生效', () => {
+    const file = fileWith();
+    const { text } = exportSkeletonText(file);
+    const filled = fillRow(text, 'c0001', '新品牌名');
+    const { skeleton, report } = parseSkeletonText(filled);
+    expect(report.ok).toBe(true);
+    const { file: next, report: r2 } = Uragan.applySkeleton(file, skeleton);
+    expect(r2.ok).toBe(true);
+    expect(next.pages[0]!.content.title.value).toBe('新品牌名');
+    // 未填写的 c0011 保持不变
+    expect(next.pages[1]!.content.title.value).toBe('产品特性');
+  });
+
+  it('多行/含符号内容走围栏块 f@n，原样往返零转义', () => {
+    const file = fileWith();
+    const { text } = exportSkeletonText(file);
+    // 文末追加一个围栏块，并把 desc 行的填写列指向它
+    const block = '```text {:id 1}\n大家好，欢迎观看。\n{"nodeType":"flex","text":"任何符号都不转义"}\n```';
+    const filled = fillRow(text + '\n\n' + block, 'c0043', 'f@1');
+    const { skeleton, report } = parseSkeletonText(filled);
+    expect(report.ok).toBe(true);
+    const { file: next, report: r2 } = Uragan.applySkeleton(file, skeleton);
+    expect(r2.ok).toBe(true);
+    expect(next.pages[1]!.content.desc.value).toBe('大家好，欢迎观看。\n{"nodeType":"flex","text":"任何符号都不转义"}');
+  });
+
+  it('number/boolean 类型转换；非法类型报 U-3004', () => {
+    const file = fileWith();
+    const { text } = exportSkeletonText(file);
+    const { skeleton, report } = parseSkeletonText(fillRow(text, 'c0042', '64'));
+    expect(report.ok).toBe(true);
+    const { file: next } = Uragan.applySkeleton(file, skeleton);
+    expect(next.pages[0]!.content.count.value).toBe(64);
+
+    // 在 count 行填入非数字 → U-3004
+    const parsed = parseSkeletonText(fillRow(text, 'c0042', 'abc'));
+    expect(parsed.report.ok).toBe(false);
+    expect(parsed.report.errors.some((e) => e.code === 'U-3004')).toBe(true);
+  });
+
+  it('单元格含 | 符号转义 \| 往返；乱填引用 f@99 → U-3023；未闭合围栏 → U-3022', () => {
+    const file = fileWith();
+    file.pages[0]!.content.title = { cid: 'c0001', copy: true, kind: 'text', value: 'A | B' };
+    const { text } = exportSkeletonText(file);
+    expect(text).toContain('A \\| B');
+    const { skeleton, report } = parseSkeletonText(text);
+    expect(report.ok).toBe(true);
+    const { file: next } = Uragan.applySkeleton(file, skeleton);
+    expect(next.pages[0]!.content.title.value).toBe('A | B');
+
+    const p2 = parseSkeletonText(fillRow(text, 'c0001', 'f@99'));
+    expect(p2.report.errors.some((e) => e.code === 'U-3023')).toBe(true);
+
+    const unclosed = parseSkeletonText(text + '\n```text {:id 5}\n未闭合');
+    expect(unclosed.report.errors.some((e) => e.code === 'U-3022')).toBe(true);
   });
 });

@@ -25,5 +25,72 @@
 ### AI与MCP集成
 - 将整个框架封装为**MCP Server（模型上下文协议服务器）**，对外暴露“列举页面”、“调整顺序”、“导出文案框架”、“导出整体配置”、“渲染视频”等工具，让Claude等AI Agent能通过自然语言**自主驱动整个流程**，实现全对话式操作。
 
-### 最终目标
-让不懂代码的普通用户，面对的永远只是“**一个工程文件**”和“**一系列可视页面**”。背后复杂的“去重、冲突重命名、定义拷贝”全由编译器自动处理，极致简洁，但又保留了无限灵活的单页定制能力。
+---
+
+## 实现状态
+
+当前为 **v0.1（核心全部落地）**，七个包（shared / core / cli / render / mcp / gui）已实现并通过 **69 项单元测试**：
+
+| 能力 | 状态 | 说明 |
+|---|---|---|
+| Core 引擎 | ✅ | 导入展开、去重/冲突重命名、往返不变量、本地引用拦截、JSONC 输入、schemaVersion 迁移器 |
+| CLI 命令面 | ✅ | `uragan init/import/export/validate/pages/page/copy/shared/component/render/assets/tui/serve-mcp` |
+| 渲染管线 | ✅ | hero/section/grid/chart 翻译器 + Remotion 合成；**内置 Chrome Headless Shell，离线渲染**（无需联网下载浏览器） |
+| MCP Server | ✅ | 15 个工具（list_pages/reorder_pages/page_get/page_overwrite/copy_export/copy_import/component_inline/render_video…），协议级端到端测试通过 |
+| TUI | ✅ | 5 视图（页面/共享池/组件/资产/信息）+ 全部动作键，背景块配色（黑/白终端均清晰） |
+| GUI | ✅ | 零依赖 Web 界面：拖拽排序、单页编辑、文案填充（JSON/Markdown）、组件内联、资产体检、渲染预览 |
+| 文案框架文本形态 | ✅ | 同一框架双形态：JSON（程序/AI 权威）+ **Markdown 表单**（普通用户直接填表；多行/代码片段走 `f@编号` 围栏块） |
+
+## 快速开始
+
+```powershell
+# 1) 安装依赖并构建
+pnpm install
+pnpm build
+
+# 2) 建一个空工程（或用示例配置导入）
+node packages/cli/dist/index.js init demo.uragan --canvas 1280x720 --name 示例
+node packages/cli/dist/index.js import examples/promo.config.json -o demo.uragan
+
+# 3) 用 TUI 交互（推荐，覆盖全部功能）
+node packages/cli/dist/index.js tui -p demo.uragan
+```
+
+## 使用入口
+
+### 终端 TUI（当前窗口，最完整）
+```powershell
+uragan tui [-p 工程.uragan]      # 不带 -p 进入后可按 O 打开 / N 新建
+```
+- **视图**：`1 页面 · 2 共享池 · 3 组件 · 4 资产 · 5 信息`
+- **页面视图**：`↑↓` 选页 · `←→` 移动顺序 · `Enter` 编辑字段 · `G` 导出单页
+- **全局**：`S` 导出文案框架 · `I` 导入文案 · `R` 渲染视频 · `E` 导出整体配置 · `M` 导入配置 · `V` 校验 · `T` 资产体检 · `O` 打开工程 · `N` 新建工程 · `X` 关闭工程 · `Q` 退出
+
+### CLI（脚本/自动化）
+```powershell
+uragan import config.json -o out.uragan   # 导入展开
+uragan pages list / reorder p02 p01       # 排序
+uragan page get p01 / page overwrite p01 file.json  # 单页循环
+uragan copy export --format json|md       # 导出文案框架（JSON / Markdown 表单）
+uragan copy import skeleton.md            # 导入已填文案（自动识别两种格式）
+uragan export demo.uragan -o config.json  # 导出整体交换配置（dedup）
+uragan component inline p01 card          # 复制组件代码到页面
+uragan render out.mp4                     # 渲染视频（离线）
+uragan assets check                       # 资产体检
+uragan serve-mcp                          # 启动 MCP Server（stdio）
+```
+
+### GUI（浏览器，零命令）
+```powershell
+node packages/gui/dist/server.js --project demo.uragan --port 5173
+# 打开 http://127.0.0.1:5173
+```
+
+### MCP（AI Agent 对话驱动）
+```jsonc
+{ "command": "node", "args": ["E:/UraGAN/packages/mcp/dist/cli.js"] }
+```
+Agent 按 `project_import → list_pages → reorder_pages → copy_export → copy_import → render_video` 即可自主走完 6 步闭环。
+
+### 离线渲染
+浏览器已内置在 `packages/render/vendor/`，**拷贝工程即可在任何无网机器渲染**；无内置时回退在线下载，也可用环境变量 `URA_CHROME_BROWSER` 指定。

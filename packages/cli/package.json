@@ -26,6 +26,11 @@
     "@uragan/mcp": "workspace:*",
     "@uragan/render": "workspace:*",
     "@uragan/shared": "workspace:*",
-    "commander": "^12.1.0"
+    "commander": "^12.1.0",
+    "ink": "^7.1.1",
+    "react": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18"
   }
 }

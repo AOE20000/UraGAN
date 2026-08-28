@@ -1,4 +1,5 @@
 export * from './copy.js';
+export * from './copyText.js';
 export * from './dedup.js';
 export * from './engine.js';
 export * from './expander.js';

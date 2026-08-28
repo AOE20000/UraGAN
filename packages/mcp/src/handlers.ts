@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { Uragan, blankFile, readProjectFile, withProjectExt, writeProjectFile } from '@uragan/core';
+import { Uragan, blankFile, exportSkeletonText, parseSkeletonText, readProjectFile, withProjectExt, writeProjectFile } from '@uragan/core';
 import type { ValidationReport } from '@uragan/shared';
 
 /**
@@ -175,10 +175,20 @@ export function pageOverwrite(a: PageOverwriteArgs): ToolResult {
 export interface CopyExportArgs {
   path?: string;
   out?: string;
+  /** json（默认，权威形态）或 md（Markdown 文本框架，§3.9 人读表单） */
+  format?: 'json' | 'md';
 }
 export function copyExport(a: CopyExportArgs = {}): ToolResult {
   const r = load(a.path ?? 'project.uragan');
   if (!r.ok) return r;
+  if (a.format === 'md') {
+    const { text } = exportSkeletonText(r.file);
+    if (a.out) {
+      writeFileSync(a.out, text, 'utf8');
+      return ok(`已导出文本文案框架 → ${a.out}`);
+    }
+    return ok(text);
+  }
   const { skeleton } = Uragan.exportSkeleton(r.file);
   const json = JSON.stringify(skeleton, null, 2);
   if (a.out) {
@@ -200,7 +210,10 @@ export function copyImport(a: CopyImportArgs): ToolResult {
   try {
     skeleton = JSON.parse(a.skeletonJson);
   } catch {
-    return fail('skeletonJson 不是合法 JSON');
+    // 非 JSON → 尝试 Markdown 文本框架（§3.9）自动探测
+    const parsed = parseSkeletonText(a.skeletonJson);
+    if (!parsed.report.ok) return fail(reportText(parsed.report, '文本框架解析失败'));
+    skeleton = parsed.skeleton;
   }
   const { file, report } = Uragan.applySkeleton(r.file, skeleton as Parameters<typeof Uragan.applySkeleton>[1]);
   if (!report.ok) return fail(reportText(report, '文案填充失败'));

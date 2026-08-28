@@ -1,0 +1,60 @@
+{
+  "schemaVersion": "1",
+  "kind": "copy-skeleton",
+  "pages": [
+    {
+      "pageId": "p02_feature",
+      "name": "特性页",
+      "items": [
+        {
+          "pageId": "p02_feature",
+          "cid": "c0011",
+          "field": "value",
+          "kind": "text",
+          "sample": "核心特性a"
+        },
+        {
+          "pageId": "p02_feature",
+          "cid": "c0012",
+          "field": "value",
+          "kind": "text",
+          "sample": "超快渲染"
+        },
+        {
+          "pageId": "p02_feature",
+          "cid": "c0013",
+          "field": "value",
+          "kind": "text",
+          "sample": "Remotion 逐帧精确"
+        },
+        {
+          "pageId": "p02_feature",
+          "cid": "c0014",
+          "field": "value",
+          "kind": "text",
+          "sample": "配置驱动"
+        },
+        {
+          "pageId": "p02_feature",
+          "cid": "c0015",
+          "field": "value",
+          "kind": "text",
+          "sample": "设计与内容解耦"
+        }
+      ]
+    },
+    {
+      "pageId": "p01_home",
+      "name": "开场页",
+      "items": [
+        {
+          "pageId": "p01_home",
+          "cid": "c0001",
+          "field": "value",
+          "kind": "text",
+          "sample": "经绘制的新标题"
+        }
+      ]
+    }
+  ]
+}

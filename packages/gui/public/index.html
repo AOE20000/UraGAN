@@ -94,9 +94,10 @@
   <section>
     <div class="panel">
       <h2>文案填充 <span class="hint">（第 4/5 步）</span></h2>
-      <textarea id="skeleton" placeholder="点击「导出文案框架」→ 由 AI 填充 value → 「导入填回」"></textarea>
+      <textarea id="skeleton" placeholder="点击「导出文案框架（JSON）」或「导出文本框架（Markdown 表单）」→ 填写 → 导入填回"></textarea>
       <div class="row">
-        <button onclick="exportSkeleton()">导出文案框架</button>
+        <button onclick="exportSkeleton()">导出框架(JSON)</button>
+        <button onclick="exportSkeletonMd()">导出文本框架(Markdown)</button>
         <button onclick="importSkeleton()">导入填回</button>
         <span id="copyStatus" class="status"></span>
       </div>
@@ -271,13 +272,25 @@ async function exportSkeleton() {
     // api() 对纯 JSON 200 无 ok 字段：返回原始数据
     $('skeleton').value = JSON.stringify(s, null, 2);
     const n = (s.pages || []).reduce((a, p) => a + (p.items || []).length, 0);
-    setStatus($('copyStatus'), `已导出 ${n} 个占位符`, 'ok');
+    setStatus($('copyStatus'), `已导出 JSON 框架（${n} 个占位符）`, 'ok');
+  } catch (e) { setStatus($('copyStatus'), e.message, 'err'); }
+}
+
+async function exportSkeletonMd() {
+  try {
+    const res = await fetch('/api/skeleton/md');
+    if (!res.ok) throw new Error('导出失败：' + res.status);
+    $('skeleton').value = await res.text();
+    const n = ($('skeleton').value.match(/^\| c/gm) || []).length;
+    setStatus($('copyStatus'), `已导出文本框架（${n} 个占位符，Markdown 表单）`, 'ok');
   } catch (e) { setStatus($('copyStatus'), e.message, 'err'); }
 }
 
 async function importSkeleton() {
   try {
-    await api('/api/skeleton', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: $('skeleton').value });
+    const res = await fetch('/api/skeleton', { method: 'POST', headers: { 'Content-Type': 'text/plain; charset=utf-8' }, body: $('skeleton').value });
+    const data = await res.json().catch(() => ({ ok: false, message: '响应非 JSON' }));
+    if (!res.ok) throw new Error(data.message || (data.errors || []).map(e => e.message).join('；'));
     setStatus($('copyStatus'), '✓ 文案填充完成', 'ok');
   } catch (e) { setStatus($('copyStatus'), e.message, 'err'); }
 }

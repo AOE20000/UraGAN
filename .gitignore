@@ -1,5 +1,22 @@
+# 依赖与构建产物
 node_modules/
 dist/
 *.tsbuildinfo
+
+# 渲染产物 / 工程文件（用户工程不入库）
 *.mp4
 *.uragan
+render.mp4
+page-*.json
+skeleton.json
+skeleton.md
+
+# 内置浏览器（体积大：约 270MB / exe 约 190MB，超 GitHub 单文件 100MB 限制。
+# 不入 git：渲染时按 本地缓存 → 在线下载 → URA_CHROME_BROWSER 回退）
+packages/render/vendor/
+
+# 本地示例 / 临时文件
+.smoke/
+*.log
+.DS_Store
+Thumbs.db

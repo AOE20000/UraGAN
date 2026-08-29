@@ -301,6 +301,14 @@ program
   });
 
 program
+  .command('gui')
+  .description('以 GUI 模式启动（预留入口：原生 GUI 将在未来版本提供）')
+  .action(() => {
+    console.error('GUI 模式尚未实现：未来将以原生方式提供（实现方案 Qt/GTK 等待定）。当前交互界面请使用：uragan tui');
+    process.exitCode = 1;
+  });
+
+program
   .command('serve-mcp')
   .description('启动 MCP Server（stdio，工具面 = 命令面）')
   .action(async () => {

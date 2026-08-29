@@ -1,8 +1,9 @@
 import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
 import type { ProjectFile } from '@uragan/shared';
 import { bundle } from '@remotion/bundler';
 import { renderMedia, selectComposition } from '@remotion/renderer';
-import { checkAssets, collectAssetRefs, resolveAssetSrc } from './assets.js';
+import { checkAssets, collectAssetRefs, localAssetToDataUrl, resolveAssetSrc } from './assets.js';
 import { browserForRender, vendoredBrowserPath } from './browser.js';
 import { progressFromFrames } from './progress.js';
 import { COMPOSITION_ID } from './remotion/Root.js';
@@ -19,7 +20,7 @@ export interface RenderOptions {
   concurrency?: number;
   /** 显式指定浏览器可执行文件（缺省自动使用包内内置 chrome-headless-shell，离线可用） */
   browserExecutable?: string;
-  /** 渲染进度回调（0-1），用于 CLI/GUI/TUI 进度条 */
+  /** 渲染进度回调（0-1），用于 CLI/TUI 进度条 */
   onProgress?: (progress: number) => void;
   /** 渲染前打印浏览器选择等诊断信息 */
   verbose?: boolean;
@@ -42,7 +43,15 @@ export interface RenderResult {
  * 资产按 §3.8 在翻译层解析（URL 原样 / 相对路径 → projectDir）。
  */
 export async function renderProject(file: ProjectFile, opts: RenderOptions): Promise<RenderResult> {
-  const scenes = translateProject(file, { projectDir: opts.projectDir });
+  if (file.pages.length === 0) {
+    // T6：不再“静默渲染 0s 空视频”，给调用方明确错误
+    throw new Error('工程为空（无页面），无法渲染；请先导入或创建页面');
+  }
+  const scenes = translateProject(file, {
+    projectDir: opts.projectDir,
+    // T7：本地相对路径资产 → 内联 data URL，规避 headless 浏览器的 file:// 读取限制
+    assetMapper: (abs) => (existsSync(abs) ? localAssetToDataUrl(abs) : abs),
+  });
   const entryPoint = fileURLToPath(new URL('./remotion/entry.js', import.meta.url));
   const serveUrl = await bundle({ entryPoint });
   const inputProps = { scenes };
@@ -76,5 +85,5 @@ export async function renderProject(file: ProjectFile, opts: RenderOptions): Pro
   };
 }
 
-export { checkAssets, collectAssetRefs, resolveAssetSrc, translateProject, vendoredBrowserPath };
+export { checkAssets, collectAssetRefs, localAssetToDataUrl, resolveAssetSrc, translateProject, vendoredBrowserPath };
 export type { RenderedProject, SceneAnimation, SceneNode, SceneStyle, TranslateOptions } from './types.js';

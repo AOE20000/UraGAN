@@ -1,7 +1,31 @@
-import { existsSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, extname, isAbsolute, join, resolve } from 'node:path';
 import type { Issue, ProjectFile } from '@uragan/shared';
 import { resolveDef } from './style.js';
+
+const MIME_BY_EXT: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.avif': 'image/avif',
+  '.woff2': 'font/woff2',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+};
+
+/**
+ * 本地资产文件 → data URL（T7：规避 Chromium/Remotion 对 file:// 本地读取的策略限制，
+ * headless 渲染环境默认不允许网页直接读本地文件系统；内联为 data URL 后天然可渲染）。
+ */
+export function localAssetToDataUrl(absPath: string): string {
+  const mime = MIME_BY_EXT[extname(absPath).toLowerCase()] ?? 'application/octet-stream';
+  return `data:${mime};base64,${readFileSync(absPath).toString('base64')}`;
+}
 
 export interface AssetRef {
   /** 原始引用串（相对路径 / URL） */

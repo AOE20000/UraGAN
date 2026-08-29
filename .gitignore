@@ -3,6 +3,9 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# 便携分发包（pnpm pack 产物）
+build/
+
 # 渲染产物 / 工程文件（用户工程不入库）
 *.mp4
 *.uragan

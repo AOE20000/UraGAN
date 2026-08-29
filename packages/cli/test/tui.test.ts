@@ -2,21 +2,23 @@ import { describe, expect, it } from 'vitest';
 import { TuiApp, SHORTCUTS } from '../src/tui/app.js';
 import { Uragan } from '@uragan/core';
 import {
-  appendChar,
   clip,
   coerceValue,
-  defaultNewName,
   defSummary,
   displayValue,
+  editInput,
   fieldKind,
   fieldsOfPage,
+  isOpenableProject,
   isTextInputMode,
+  lastFmDir,
   moveDown,
   moveUp,
   pageStats,
+  rememberFmDir,
   selectedField,
   selectedPage,
-  sessionIntent,
+  sortFm,
   VIEW_LABEL,
   type TuiSnapshot,
 } from '../src/tui/state.js';
@@ -107,31 +109,23 @@ describe('TUI 视图（VIEW_LABEL 5 个齐全）', () => {
   });
 });
 
-describe('TUI 会话逻辑（O/N 打开新建，纯函数）', () => {
-  it('sessionIntent：存在=打开、不存在=缺工程提示、空输入=未输入', () => {
-    expect(sessionIntent('a.uragan', true).kind).toBe('open');
-    expect(sessionIntent('a.uragan', false).kind).toBe('missing');
-    expect(sessionIntent('a.uragan', false).toast).toContain('O 打开');
-    expect(sessionIntent('', true).toast).toBe('未输入路径');
-  });
-
-  it('defaultNewName：补 .uragan 后缀、去重后缀', () => {
-    expect(defaultNewName('proj')).toBe('proj.uragan');
-    expect(defaultNewName('proj.uragan')).toBe('proj.uragan');
-    expect(defaultNewName('  ')).toBe('project.uragan');
-  });
-});
-
-describe('TUI 输入态（appendChar / isTextInputMode）', () => {
-  it('appendChar：数字/字符追加、退格删除、控制键忽略', () => {
-    expect(appendChar('', '1', {})).toBe('1'); // 数字 1 正常追加
-    expect(appendChar('12', '3', {})).toBe('123');
-    expect(appendChar('123', '4', { backspace: false })).toBe('1234');
-    expect(appendChar('123', '', { backspace: true })).toBe('12');
-    expect(appendChar('abc', 'x', { ctrl: true })).toBe('abc'); // Ctrl 组合不追加
-    expect(appendChar('abc', '', {})).toBe('abc'); // 无输入不追加
-    // 多字节/非单字符不追加（如 IME 组合）
-    expect(appendChar('a', '中文', {})).toBe('a');
+describe('TUI 输入态（editInput / isTextInputMode）', () => {
+  it('editInput：中文 IME 整词上屏全插入、左右移光标、退格删光标前、控制键忽略', () => {
+    // 中文整词（多个字符）在光标处插入，光标后移整词长度
+    expect(editInput('ab', 1, '中文', {})).toEqual({ text: 'a中文b', cursor: 3 });
+    expect(editInput('你好世界', 2, 'JSON', {})).toEqual({ text: '你好JSON世界', cursor: 6 });
+    // 光标处插入与整词
+    expect(editInput('ab', 0, 'X', {})).toEqual({ text: 'Xab', cursor: 1 });
+    expect(editInput('ab', 2, 'YZ', {})).toEqual({ text: 'abYZ', cursor: 4 });
+    // 左右方向键移动光标（不修改文本）
+    expect(editInput('ab', 1, '', { leftArrow: true })).toEqual({ text: 'ab', cursor: 0 });
+    expect(editInput('ab', 0, '', { rightArrow: true })).toEqual({ text: 'ab', cursor: 1 });
+    // 退格删除光标前一个字符
+    expect(editInput('abc', 1, '', { backspace: true })).toEqual({ text: 'bc', cursor: 0 });
+    expect(editInput('abc', 0, '', { backspace: true })).toEqual({ text: 'abc', cursor: 0 });
+    // Ctrl/Meta 组合键不插入
+    expect(editInput('abc', 1, 'z', { ctrl: true })).toEqual({ text: 'abc', cursor: 1 });
+    expect(editInput('abc', 1, '', {})).toEqual({ text: 'abc', cursor: 1 });
   });
 
   it('isTextInputMode：编辑态/会话输入为 true，浏览态为 false', () => {
@@ -157,5 +151,66 @@ describe('TUI 信息展示辅助（defSummary / pageStats）', () => {
     const f = sampleFile();
     expect(pageStats(f.pages[0])).toEqual({ fields: 2, copy: 2, animations: 0 });
     expect(pageStats(undefined)).toEqual({ fields: 0, copy: 0, animations: 0 });
+  });
+});
+
+describe('TUI 文件管理器（T5：排序 / 可开工程判定 / 上次位置记忆）', () => {
+  it('sortFm：目录优先、各自名称字典序', () => {
+    const es = sortFm([
+      { name: 'b.json', isDir: false, isProject: true },
+      { name: 'a', isDir: true, isProject: false },
+      { name: 'a.json', isDir: false, isProject: true },
+    ]);
+    expect(es.map((e) => e.name)).toEqual(['a', 'a.json', 'b.json']);
+  });
+
+  it('isOpenableProject：目录 .uragan / 文件 json|jsonc|uragan 可开，其余不可', () => {
+    expect(isOpenableProject('promo.uragan', true)).toBe(true);
+    expect(isOpenableProject('promo.uragan', false)).toBe(true);
+    expect(isOpenableProject('cfg.json', false)).toBe(true);
+    expect(isOpenableProject('cfg.jsonc', false)).toBe(true);
+    expect(isOpenableProject('notes.txt', true)).toBe(false);
+    expect(isOpenableProject('page.png', false)).toBe(false);
+  });
+
+  it('lastFmDir/rememberFmDir：内存记忆上次位置，未记住时回退', () => {
+    expect(lastFmDir('/fallback')).toBe('/fallback');
+    rememberFmDir('/a/b');
+    expect(lastFmDir('/fallback')).toBe('/a/b');
+  });
+});
+
+describe('TUI 页组锁定（整体文件直接移入：页面1动、页面2跟着动）', () => {
+  function groupedFile() {
+    const f = sampleFile();
+    f.pages.push({ pageId: 'p03_extra', name: '外部页', kind: 'chart', $defs: {}, content: { value: { cid: 'c0091', copy: true, kind: 'number', value: 1 } }, animations: [] });
+    f.project.pageGroups = [{ id: 'campaign', pages: ['p02_feature', 'p03_extra'] }];
+    return f;
+  }
+
+  it('上移组内一页 → 整组跟随，组内顺序不变', () => {
+    const up = moveUp(groupedFile(), 2);
+    expect(up.pages.map((p) => p.pageId)).toEqual(['p02_feature', 'p03_extra', 'p01_home']);
+  });
+
+  it('下移组内一页 → 整组跟随；组已在首位/队尾时返回原引用', () => {
+    const g = groupedFile(); // [p01, p02(group首), p03(group尾)]
+    const down = moveDown(g, 0); // 非组页 p01_home 下移一档（与整组互换）
+    expect(down.pages.map((p) => p.pageId)).toEqual(['p02_feature', 'p03_extra', 'p01_home']);
+    // 整组上移到队首后，组在首位 → 无法再上移（原引用）
+    const tops = moveUp(g, 1); // p02（组首）上移 → 整组道最前
+    expect(tops.pages.map((p) => p.pageId)).toEqual(['p02_feature', 'p03_extra', 'p01_home']);
+    expect(moveUp(tops, 1)).toBe(tops);
+    // p03（组尾）在队尾 → 无法下移（原引用）
+    expect(moveDown(g, 2)).toBe(g);
+    // 组首在队首 → 无法上移（原引用）
+    expect(moveUp(tops, 0)).toBe(tops);
+  });
+
+  it('普通（未成组）页面行为不变', () => {
+    const f = sampleFile();
+    expect(moveUp(f, 1).pages.map((p) => p.pageId)).toEqual(['p02_feature', 'p01_home']);
+    expect(moveDown(f, 0).pages.map((p) => p.pageId)).toEqual(['p02_feature', 'p01_home']);
+    expect(moveUp(f, 0)).toBe(f);
   });
 });

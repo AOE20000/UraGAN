@@ -125,15 +125,29 @@ export const CanvasZ = z.object({
 });
 export type Canvas = z.infer<typeof CanvasZ>;
 
+export const PageIdZ = z.string().regex(/^[a-zA-Z][\w-]*$/, 'pageId 需以字母开头，仅含字母/数字/下划线/连字符');
+
+/**
+ * 页组（整体文件直接移入工程目录时的页序锁定）：
+ * 来自同一整体文件的页面保持其内部顺序，重排时整组跟随（页面1动，页面2跟着动）。
+ */
+export const PageGroupZ = z.object({
+  /** 组标识：通常为来源整体文件的文件名 */
+  id: z.string().min(1),
+  /** 组内页面（按来源整体文件内部顺序） */
+  pages: z.array(PageIdZ).min(2),
+});
+export type PageGroup = z.infer<typeof PageGroupZ>;
+
 export const ProjectMetaZ = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   canvas: CanvasZ,
   defaults: z.object({ pageDuration: z.number().gt(0) }).optional(),
+  /** 页组锁定（整体文件直接移入时保留其内部页序；导入拆分产物无此字段，页面自由移动） */
+  pageGroups: z.array(PageGroupZ).optional(),
 });
 export type ProjectMeta = z.infer<typeof ProjectMetaZ>;
-
-export const PageIdZ = z.string().regex(/^[a-zA-Z][\w-]*$/, 'pageId 需以字母开头，仅含字母/数字/下划线/连字符');
 
 /** 页面（展开形：工程文件内每页自带 $defs，引用一律指向本地） */
 export const PageZ = z.object({

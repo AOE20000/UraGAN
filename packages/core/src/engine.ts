@@ -1,5 +1,6 @@
 import type { CopySkeleton, ExchangeConfig, Page, ProjectFile, ValidationReport } from '@uragan/shared';
 import { ExchangeConfigZ, PageZ, ProjectFileZ, SCHEMA_VERSION } from '@uragan/shared';
+import { existsSync, readFileSync } from 'node:fs';
 import { applySkeleton, exportSkeleton } from './copy.js';
 import { exportExchange } from './dedup.js';
 import { ensureCids, expandExchange } from './expander.js';
@@ -7,9 +8,19 @@ import { inlineComponent } from './inline.js';
 import { migrateData } from './migrate.js';
 import { parseJsonc } from './parser.js';
 import { issuesReport, okReport } from './report.js';
+import { isProjectDir, projectDirFor, readProjectDir, salvageProjectShape, writeProjectDir } from './store.js';
 import { validateProjectFile, zodIssues } from './validate.js';
 
 export type { CopySkeleton, ExchangeConfig, Page, ProjectFile, ValidationReport };
+
+export interface OpenResult {
+  /** 打开的工程路径（目录工程时指向目录） */
+  projectPath: string;
+  file: ProjectFile;
+  report: ValidationReport;
+  /** true = 源是配置文件，已自动展开并生成工程目录 */
+  converted: boolean;
+}
 
 /**
  * 门面：6 步闭环所需全部能力（导入展开 / 导出整体配置 / 页面操作 / 文案 / 组件内联）。
@@ -35,11 +46,51 @@ export class Uragan {
     }
     const project = ProjectFileZ.safeParse(data);
     if (!project.success) {
-      return { file: blankFile(), report: issuesReport(zodIssues(project)) };
+      // T6 宽松化：手续齐整但缺 $defs 等结构字段的“工程外形”文件 → 自动补齐后重试（不再返回空占位工程）
+      const salvaged = salvageProjectShape(data);
+      const retry = ProjectFileZ.safeParse(salvaged);
+      if (!retry.success) return { file: blankFile(), report: issuesReport(zodIssues(project)) };
+      for (const page of retry.data.pages) ensureCids(page.content);
+      const report = validateProjectFile(retry.data);
+      return { file: retry.data, report };
     }
     for (const page of project.data.pages) ensureCids(page.content);
     const report = validateProjectFile(project.data);
     return { file: project.data, report };
+  }
+
+  /**
+   * 打开工程（T2：不再维护易碎的“单文件内部形态”）：
+   * - 工程目录 → 聚合读取
+   * - 单文件（交换配置 / legacy .uragan）→ 自动展开，在同目录生成 <名>.uragan/ 工程目录并写入，
+   *   projectPath 指向新目录（“导入展开”落地为磁盘上的按页拆分文件）
+   */
+  static openProject(sourcePath: string): OpenResult {
+    if (!sourcePath.trim()) {
+      return { projectPath: sourcePath, file: blankFile(), report: issuesReport([{ code: 'U-9001', severity: 'error', path: '$', message: '未指定工程路径' }]), converted: false };
+    }
+    if (isProjectDir(sourcePath)) {
+      const r = readProjectDir(sourcePath);
+      return { projectPath: sourcePath, file: r.file, report: r.report, converted: false };
+    }
+    if (!existsSync(sourcePath)) {
+      return { projectPath: sourcePath, file: blankFile(), report: issuesReport([{ code: 'U-9001', severity: 'error', path: '$', message: `工程不存在：${sourcePath}` }]), converted: false };
+    }
+    let text: string;
+    try {
+      text = readFileSync(sourcePath, 'utf8');
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      return { projectPath: sourcePath, file: blankFile(), report: issuesReport([{ code: 'U-9001', severity: 'error', path: '$', message: `读取失败：${message}` }]), converted: false };
+    }
+    const imp = Uragan.importFromText(text);
+    if (!imp.report.ok) {
+      return { projectPath: sourcePath, file: imp.file, report: imp.report, converted: false };
+    }
+    const dir = projectDirFor(sourcePath);
+    writeProjectDir(dir, imp.file);
+    const r = readProjectDir(dir);
+    return { projectPath: dir, file: r.file, report: r.report, converted: true };
   }
 
   /** 导出整体交换配置：工程文件 → dedup($shared) 形态 */
@@ -56,14 +107,19 @@ export class Uragan {
   /** 调整顺序：任何顺序都合法（挑选 + 排序），仅作为 pages 数组的新排列 */
   static reorder(file: ProjectFile, pageIds: string[]): { file: ProjectFile; report: ValidationReport } {
     const byId = new Map(file.pages.map((p) => [p.pageId, p]));
-    const missing = pageIds.filter((id) => !byId.has(id));
-    if (missing.length > 0) {
+    // 页组锁定（整体文件直接移入）：组内页面在输入列表中保持连续，整组按组内顺序归位
+    const order = normalizeGroupOrder(pageIds, file.project.pageGroups ?? []);
+    const all = file.pages.map((p) => p.pageId);
+    const missing = all.filter((id) => !order.includes(id));
+    const unknown = order.filter((id) => !byId.has(id));
+    if (missing.length > 0 || unknown.length > 0) {
+      const bad = [...missing, ...unknown];
       return {
         file,
-        report: issuesReport([{ code: 'U-3008', severity: 'error', path: 'pages', message: `未知 pageId：${missing.join('、')}` }]),
+        report: issuesReport([{ code: 'U-3008', severity: 'error', path: 'pages', message: `未知 pageId：${bad.join('、')}` }]),
       };
     }
-    return { file: { ...file, pages: pageIds.map((id) => byId.get(id) as Page) }, report: okReport() };
+    return { file: { ...file, pages: order.map((id) => byId.get(id) as Page) }, report: okReport() };
   }
 
   static getPage(file: ProjectFile, pageId: string): Page | undefined {
@@ -103,6 +159,36 @@ export class Uragan {
 /** 页面应用时长：页级 duration > project.defaults.pageDuration > 默认值 */
 export function pageDuration(page: Page): number {
   return page.duration ?? 2.5;
+}
+
+/**
+ * 页组锁定归一化：把“期望顺序”整理成合法的最终顺序。
+ * - 组内页面已在输入中 → 令其在首次出现处成段归位（保持组内原序），避免组被拆散
+ * - 非组页面原样保留
+ * 返回结果可用于直接重建 pages 数组（配合 U-3008 校验缺页/未知页）。
+ */
+export function normalizeGroupOrder(ids: string[], groups: { id: string; pages: string[] }[] = []): string[] {
+  const groupOf = new Map<string, { id: string; pages: string[] }>();
+  for (const g of groups) for (const p of g.pages) groupOf.set(p, g);
+  const out: string[] = [];
+  const placedPages = new Set<string>();
+  const placedGroups = new Set<string>();
+  for (const id of ids) {
+    const g = groupOf.get(id);
+    if (g && !placedGroups.has(g.id)) {
+      placedGroups.add(g.id);
+      for (const m of g.pages) {
+        if (!placedPages.has(m)) {
+          out.push(m);
+          placedPages.add(m);
+        }
+      }
+    } else if (!g && !placedPages.has(id)) {
+      out.push(id);
+      placedPages.add(id);
+    }
+  }
+  return out;
 }
 
 function blankFile(): ProjectFile {

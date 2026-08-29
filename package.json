@@ -10,7 +10,9 @@
     "test": "pnpm -r test",
     "cli": "node packages/cli/dist/index.js",
     "tui": "node packages/cli/dist/index.js tui -p project.uragan",
-    "gui": "node packages/gui/dist/server.js --project project.uragan --port 5173",
+    "pack": "node scripts/package-portable.mjs",
+    "pack:lite": "node scripts/package-portable.mjs --lite",
+    "pack:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-portable.ps1",
     "link:global": "cd packages/cli && pnpm link --global"
   },
   "engines": {

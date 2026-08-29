@@ -55,18 +55,6 @@ importers:
         specifier: ^3.24.0
         version: 3.25.76
 
-  packages/gui:
-    dependencies:
-      '@uragan/core':
-        specifier: workspace:*
-        version: link:../core
-      '@uragan/render':
-        specifier: workspace:*
-        version: link:../render
-      '@uragan/shared':
-        specifier: workspace:*
-        version: link:../shared
-
   packages/mcp:
     dependencies:
       '@modelcontextprotocol/sdk':

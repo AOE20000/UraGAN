@@ -1,7 +1,22 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ExchangeConfig, Page, ProjectFile } from '@uragan/shared';
 import { SCHEMA_VERSION } from '@uragan/shared';
-import { Uragan, expandExchange, exportSkeletonText, parseSkeletonText, registerMigration, validateProjectFile, validateExchange } from '../src/index.js';
+import {
+  Uragan,
+  expandExchange,
+  exportSkeletonText,
+  isProjectDir,
+  normalizeGroupOrder,
+  parseSkeletonText,
+  readProjectFile,
+  registerMigration,
+  validateExchange,
+  validateProjectFile,
+  writeProjectFile,
+} from '../src/index.js';
 
 /** 构造一个标准交换配置：$shared + 两页，页面引用共享键 */
 function sampleExchange(): ExchangeConfig {
@@ -366,5 +381,126 @@ describe('文案框架文本形态（§3.9 Markdown 兼容层）', () => {
 
     const unclosed = parseSkeletonText(text + '\n```text {:id 5}\n未闭合');
     expect(unclosed.report.errors.some((e) => e.code === 'U-3022')).toBe(true);
+  });
+});
+
+describe('T2 工程目录形态（整体文件 ⇄ 独立文件）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'uragan-core-dir-'));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  /** 构造一个 2 页整体文件（ProjectFile 展开形） */
+  function overall(): ProjectFile {
+    return toFile(sampleExchange());
+  }
+
+  it('写目录工程：根目录每页一个独立 .uragan 文件（单页工程，可独立当整体文件用）', () => {
+    const file = overall();
+    const hub = join(dir, 'promo.uragan');
+    writeProjectFile(hub, file);
+    expect(isProjectDir(hub)).toBe(true);
+    for (const p of file.pages) {
+      const standalone = JSON.parse(readFileSync(join(hub, `${p.pageId}.uragan`), 'utf8')) as ProjectFile;
+      expect(standalone.pages).toHaveLength(1); // 独立文件 = 单页工程
+      expect(standalone.pages[0]!.pageId).toBe(p.pageId);
+      expect(standalone.schemaVersion).toBe(file.schemaVersion);
+      // 元信息自含 → 独立文件可直接再导入（当整体文件用）
+      const back = Uragan.importFromText(JSON.stringify(standalone));
+      expect(back.report.ok).toBe(true);
+      expect(back.file.pages[0]!.pageId).toBe(p.pageId);
+    }
+    // 聚合读回：内容/顺序与源工程一致
+    const r = readProjectFile(hub);
+    expect(r.report.ok).toBe(true);
+    expect(r.file.pages.map((p) => p.pageId)).toEqual(file.pages.map((p) => p.pageId));
+    expect(r.file.pages[0]).toEqual(file.pages[0]);
+    expect(readdirSync(hub).filter((f) => f.endsWith('.uragan'))).toHaveLength(file.pages.length);
+  });
+
+  it('openProject：单文件整体 → 自动生成工程目录（导入展开落到磁盘的独立文件）', () => {
+    const single = join(dir, 'single.json');
+    writeFileSync(single, JSON.stringify(overall()), 'utf8');
+    const r = Uragan.openProject(single);
+    expect(r.converted).toBe(true);
+    expect(isProjectDir(r.projectPath)).toBe(true);
+    expect(readdirSync(r.projectPath).some((f) => f.endsWith('.uragan') && f !== 'single.uragan')).toBe(true);
+    expect(readdirSync(r.projectPath).filter((f) => f.endsWith('.uragan'))).toHaveLength(2);
+    expect(r.file.pages).toHaveLength(2);
+  });
+
+  it('整体文件直接移入工程目录（未走导入）→ 页序锁定成组；重排时组整体移动', () => {
+    const hub = join(dir, 'hub.uragan');
+    writeProjectFile(hub, overall());
+    const foreign = {
+      schemaVersion: '1',
+      project: { id: 'camp', name: '移入宣传', canvas: { width: 1280, height: 720, fps: 30 } },
+      pages: [
+        { pageId: 'p10_first', name: '外部页一', kind: 'chart', $defs: {}, content: { value: { cid: 'c0101', copy: true, kind: 'number', value: 1 } }, animations: [] },
+        { pageId: 'p11_second', name: '外部页二', kind: 'chart', $defs: {}, content: { value: { cid: 'c0102', copy: true, kind: 'number', value: 2 } }, animations: [] },
+      ],
+    };
+    writeFileSync(join(hub, 'campaign.uragan'), JSON.stringify(foreign), 'utf8'); // 直接移入
+    const r = readProjectFile(hub);
+    expect(r.report.ok).toBe(true);
+    expect(r.file.pages.map((p) => p.pageId)).toEqual(['p01_home', 'p02_feature', 'p10_first', 'p11_second']);
+    const group = r.file.project.pageGroups!.find((g) => g.pages.includes('p10_first'))!;
+    expect(group.pages).toEqual(['p10_first', 'p11_second']);
+    // 锁定：只想把 p10_first 提到最前 → 整组（p10+p11）一起前移，组内顺序不变
+    const { file: reordered, report } = Uragan.reorder(r.file, ['p10_first', 'p01_home', 'p02_feature', 'p11_second']);
+    expect(report.ok).toBe(true);
+    expect(reordered.pages.map((p) => p.pageId)).toEqual(['p10_first', 'p11_second', 'p01_home', 'p02_feature']);
+    // 组信息随工程持久化，且不会因源文件仍在而重复吸收
+    writeProjectFile(hub, reordered);
+    const r2 = readProjectFile(hub);
+    expect(r2.file.pages.map((p) => p.pageId)).toEqual(['p10_first', 'p11_second', 'p01_home', 'p02_feature']);
+    expect(r2.file.project.pageGroups).toEqual([{ id: 'campaign', pages: ['p10_first', 'p11_second'] }]);
+    expect(r2.file.pages).toHaveLength(4);
+  });
+
+  it('normalizeGroupOrder：组分裂输入被整理为连续归位（首现处成段）', () => {
+    const groups = [{ id: 'g', pages: ['b', 'c'] }];
+    expect(normalizeGroupOrder(['a', 'c', 'b'], groups)).toEqual(['a', 'b', 'c']);
+    expect(normalizeGroupOrder(['b', 'a', 'c'], groups)).toEqual(['b', 'c', 'a']);
+    expect(normalizeGroupOrder(['b', 'c', 'a'], groups)).toEqual(['b', 'c', 'a']);
+    // 无组时原样返回
+    expect(normalizeGroupOrder(['x', 'y'], [])).toEqual(['x', 'y']);
+  });
+});
+
+describe('T6 宽松化：缺 $defs 不再返回空占位工程', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'uragan-core-lenient-'));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('工程外形缺 $defs（手工精简 / 老数据）→ 自动补齐为空定义，页面可读不落空', () => {
+    const lean = {
+      schemaVersion: '1',
+      project: { id: 'x', name: '精简工程', canvas: { width: 800, height: 450, fps: 30 } },
+      pages: [
+        { pageId: 'p1', name: '页一', kind: 'hero', content: { title: { cid: 'c1', kind: 'text', value: '你好' } } },
+      ],
+    };
+    const { file, report } = Uragan.importFromText(JSON.stringify(lean));
+    expect(report.ok).toBe(true);
+    expect(file.pages).toHaveLength(1);
+    expect(file.pages[0]!.$defs).toEqual({});
+    expect(file.pages[0]!.content.title.value).toBe('你好');
+  });
+
+  it('读单文件（缺 $defs）不再得到空工程 → 不会导出 0s 视频', () => {
+    const f = join(dir, 'lean.json');
+    writeFileSync(
+      f,
+      JSON.stringify({
+        schemaVersion: '1',
+        project: { id: 'x', name: '精简', canvas: { width: 800, height: 450, fps: 30 } },
+        pages: [{ pageId: 'p1', name: '页一', kind: 'hero', content: { title: { cid: 'c1', kind: 'text', value: '你好' } } }],
+      }),
+      'utf8',
+    );
+    const r = readProjectFile(f);
+    expect(r.file.pages).toHaveLength(1);
+    expect(r.file.pages[0]!.$defs).toEqual({});
+    // 空工程渲染守卫：无页面时明确报错而非静默 0s
+    const blank = Uragan.importFromText(JSON.stringify({ schemaVersion: '1', project: { id: 'e', name: '空', canvas: { width: 800, height: 450, fps: 30 } }, pages: [] }));
+    expect(blank.file.pages).toHaveLength(0);
   });
 });

@@ -1,4 +1,4 @@
-import { posix } from 'node:path';
+import { isAbsolute, join, posix, resolve } from 'node:path';
 import type { Content, ContentField, Page, ProjectFile } from '@uragan/shared';
 import { pageDuration } from './duration.js';
 import { defToStyle, fieldAssetSrc, fieldStyle, fieldText, resolveDef } from './style.js';
@@ -247,13 +247,18 @@ function translatePage(page: Page, project: ProjectFile['project'], mapper: (src
   };
 }
 
-/** 整份工程 → 场景图（纯函数，无 IO） */
+/** 整份工程 → 场景图（纯函数，无 IO；资产解析策略由 assetMapper 注入） */
 export function translateProject(file: ProjectFile, opts: TranslateOptions = {}): RenderedProject {
   const mapper: (src: string) => string = (src) => {
     if (/^https?:\/\//i.test(src)) return src;
     const dir = opts.projectDir ?? process.cwd();
-    // posix 规范化：跨平台统一正斜杠（浏览器/Remotion 均接受）
-    return posix.normalize(`${dir.replace(/\\/g, '/')}/${src}`);
+    // T7：本地引用（相对路径 / 绝对路径 / file:// URL）统一解析为绝对路径，
+    // 交给 assetMapper（渲染端内联为 data URL，规避 headless 浏览器对 file:// 的读取限制）。
+    const local = src.replace(/^file:\/\//i, '');
+    const abs = isAbsolute(local) ? resolve(local) : join(dir, local);
+    if (opts.assetMapper) return opts.assetMapper(abs);
+    // 纯函数默认：posix 规范化相对 URL（跨平台统一正斜杠）
+    return posix.normalize(abs.replace(/\\/g, '/'));
   };
   const pages = file.pages.map((page) => translatePage(page, file.project, mapper));
   return {

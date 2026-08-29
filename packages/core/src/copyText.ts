@@ -231,7 +231,7 @@ function kindOf(raw: string): CopyItem['kind'] {
   return 'text';
 }
 
-/** 骨架 JSON 对象是否可序列化为文本 → 便于 CLI/MCP/GUI 自动探测（简化判定：非 JSON） */
+/** 骨架 JSON 对象是否可序列化为文本 → 便于 CLI/MCP 自动探测（简化判定：非 JSON） */
 export function looksLikeSkeletonText(text: string): boolean {
   const head = text.trimStart();
   return head.startsWith('#') && /##\s*页面/.test(text);

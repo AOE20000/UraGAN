@@ -11,8 +11,7 @@
     }
   },
   "files": [
-    "dist",
-    "vendor"
+    "dist"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

@@ -93,4 +93,4 @@ node packages/gui/dist/server.js --project demo.uragan --port 5173
 Agent 按 `project_import → list_pages → reorder_pages → copy_export → copy_import → render_video` 即可自主走完 6 步闭环。
 
 ### 离线渲染
-浏览器已内置在 `packages/render/vendor/`，**拷贝工程即可在任何无网机器渲染**；无内置时回退在线下载，也可用环境变量 `URA_CHROME_BROWSER` 指定。
+渲染浏览器（Chrome Headless Shell，约 270MB）**只在本地提供，不纳入 Git**（体积过大、exe 超 GitHub 单文件 100MB 限制，见 `.gitignore`）。本机已就位于 `packages/render/vendor/`，**渲染零网络**；其它机器首次渲染会**自动在线下载**到 Remotion 缓存，之后离线。自定义路径：环境变量 `URA_CHROME_BROWSER`，或把 `packages/render/vendor/` 整个拷到目标机复用。

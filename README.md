@@ -51,7 +51,7 @@ promo.uragan/            # 工程目录
 - **直接移入**：整体文件不经过导入、直接被移入工程目录也会被自动吸收（文件监视热更新），并按**整体文件内部的页面顺序锁定成组**——改变组内第 1 页顺序时，第 2 页跟着动（整组跟随移动）。
 - **导入逻辑**：整体交换配置的共享池定义被**完整深拷贝**进每个独立页面的头部（`$defs`），此后各页只引用本地定义、各自自治；工程文件内不再保留 `$shared`。
 - **导出逻辑**：扫描各页独立定义，值相同的合并回共享池；值不同的（冲突）自动将后出现页的定义键重命名（规范化后缀为完整页码，如 `color_primary_p02_feature`）再一并提取。导出结果保持去重，且键名全局不冲突。
-- **单页交互**：任选一页导出为完整独立配置（含头部全部定义）发给 AI 修改，改完导入回软件按页直接覆盖（TUI 中对应 `G` 导出单页 / `U` 导入单页）。
+- **单页交互**：任选一页导出为完整独立配置（含头部全部定义）发给 AI 修改（TUI 中对应 `G` 导出单页）；改完直接把文件放进工程目录即可 —— 目录里的独立 `.uragan` 页文件会被自动吸收，不需要额外的「导入单页」动作。
 
 ## 组件与定制哲学
 
@@ -95,17 +95,24 @@ node packages/cli/dist/index.js tui -p demo.uragan
 
 ## 便携分发包（独立运行 / 安装）
 
-`pnpm pack` 将五个包及全部第三方依赖扁平化为 `build/uragan/` 便携分发包，**不依赖 pnpm、源码与仓库环境**——任意目录、任意已装 Node 的机器均可直接使用（TUI / CLI / MCP 均可用，含内置离线渲染浏览器）：
+`pnpm run pack` 将五个包及全部第三方依赖扁平化为 `build/uragan/` 便携分发包，**不依赖 pnpm、源码与仓库环境**——任意目录、任意已装 Node 的机器均可直接使用（TUI / CLI / MCP 均可用，含内置离线渲染浏览器）：
 
 ```powershell
-pnpm pack            # 全量（含 @remotion 渲染依赖与离线浏览器）
-# 或 pnpm pack:lite   # 精简：不含渲染依赖（体积更小，渲染时提示缺失）
+pnpm run pack            # 全量（含 @remotion 渲染依赖与离线浏览器）
+# 或 pnpm run pack:lite   # 精简：不含渲染依赖（体积更小，渲染时提示缺失）
+# node scripts/package-portable.mjs --bin-only   # 只重建 bin 入口（不重拷依赖，几秒完成）
 
 # 在任何目录直接运行（Windows 使用 .cmd 入口）
 & build\uragan\bin\uragan.cmd --version
 & build\uragan\bin\uragan.cmd tui -p demo.uragan
 & build\uragan\bin\uragan-mcp.cmd        # 独立 MCP Server
 ```
+
+**双击 `uragan.cmd` 直接进 TUI**：不带任何参数、且处于交互终端时自动启动 TUI（管道 / 脚本等非交互场景仍打印帮助）；
+未知命令会报错而不是被当成 TUI 启动。工程默认取当前目录的 `project.uragan`，若当前目录位于程序安装目录内
+（双击时的工作目录就是 `bin\`），会自动切换到用户工作区 `%USERPROFILE%\Documents\UraGAN`
+（可用环境变量 `URAGAN_WORKDIR` 覆盖），避免工程被建进安装包、在下一次 `pnpm run pack`（清空 `build/uragan`）时被删除。
+启动器还会先检测 `node`：缺失时打印提示并暂停窗口，而不是让窗口一闪而过。
 
 **安装到系统（Windows）**：将分发包拷贝到 `%LOCALAPPDATA%\UraGAN` 并注册用户 PATH，之后任意终端可直接使用：
 
@@ -115,7 +122,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install-portable.ps1 -Uninstall
 ```
 
 > 说明：分发包已在与仓库分离的临时目录验证——CLI 全命令链、MCP 握手与 15 个工具、短样例离线渲染均可正常运行。
-> 全量分发包体积约 600MB（其中 `node_modules/@uragan/render/vendor` 离线浏览器约占 270MB）。修改源码后重新执行 `pnpm pack` 覆盖即可。
+> 全量分发包体积约 600MB（其中 `node_modules/@uragan/render/vendor` 离线浏览器约占 270MB）。修改源码后重新执行 `pnpm run pack` 覆盖即可。
 
 ---
 
@@ -128,13 +135,41 @@ uragan tui [-p 工程.uragan]      # 不带 -p 进入后可按 O 打开 / N 新�
 ```
 
 - **视图**：`1 页面 · 2 共享池 · 3 组件 · 4 资产 · 5 信息`
-- **页面视图**：`↑↓` 选页 · `←→` 移动顺序 · `Enter` 编辑字段 · `G` 导出单页 · `U` 导入单页
-- **全局**：`S` 导出文案框架 · `I` 导入文案 · `R` 渲染视频 · `E` 导出整体配置 · `M` 导入配置 · `V` 校验 · `T` 资产体检 · `O` 打开工程（文件管理器，记忆上次位置）· `N` 新建工程 · `X` 关闭工程 · `Q` 退出
+- **页面视图**：`↑↓` 选页 · `←→` 移动顺序 · `Enter` 编辑字段 · `G` 导出单页
+- **全局**：`S` 导出文案框架 · `I` 导入文案 · `R` 渲染视频 · `V` 校验 · `T` 资产体检 · `O` 打开工程（文件管理器，记忆上次位置）· `N` 新建工程 · `X` 关闭工程 · `Ctrl+S` 保存回原文件 · `Q` 退出
+- **字段编辑态**：输入即为文本，`Esc` 取消、`Enter` 提交（编辑态下 `s/i/r/e/o/n…` 不会触发快捷键）
 
-### CLI（脚本 / 自动化）
+#### 持久文件与工作目录
+
+打开 `.uragan` 一律按「导入」处理：工程在派生的**工作目录**中进行，原 `.uragan` 文件原样保留、承担**持久存储**。
+
+```
+D:\my-video\
+├── win11-promo.uragan            ← 持久文件（原文件，Ctrl+S 导出到这里）
+├── win11-promo.uragan.work\      ← 工程目录：project.json + 每页一个独立文件 + skeleton.*
+├── assets\                       ← 资产（用户的）
+└── render.mp4                    ← 渲染产物
+```
+
+- **打开** = 导入：拆页写入工作目录；`.uragan` 是整体工程还是独立页面，流程一致
+- **编辑**：每次改动实时写入工作目录；头部显示 `● 未保存` / `✓ 已同步 <原文件>`
+- **保存（Ctrl+S）**：把工作目录的最新内容导出回原 `.uragan`
+- **不保存也能用**：`R` 渲染、`V` 校验读的都是工作目录，与是否保存无关
+- **再次打开**：工作目录已存在就直接接着用（里面未导出的改动不会被重新导入覆盖）
+- **新建工程（N）** 本身就是目录工程 `名字.uragan\`，没有持久文件，编辑即落盘
+- `.json` / `.jsonc` 交换配置：仍展开成同名的 `名字.uragan\` 目录，与原文件脱钩（不会回写覆盖）
+
+**目录分工**：工程本体与文案框架进**工程目录**（自包含，且被 `.gitignore` 排除）；
+资产 `assets\`、`render.mp4`、`G` 导出的单页落在**原文件旁**（用户看得见、方便分享）。
+
+**已移除的旧设计入口**：`E` 导出整体配置、`M` 导入配置 ——
+它们分别等于「Ctrl+S 导出回原 .uragan」和「O 打开工程」。
+`U` 导入单页文件保留了（和 `G` 导出单页配对），之前是同一帧里显示了两个一样的 `U`，已去掉重复的那个。
+
+### CLI / MCP（脚本 / 自动化 / AI Agent）
 
 ```powershell
-uragan import config.json -o out.uragan           # 导入展开
+uragan import config.json -o out.uragan           # 导入展开（交换配置 → 工程）
 uragan pages list / pages reorder p02 p01         # 页面排序
 uragan page get p01 / page overwrite p01 page.json # 单页循环
 uragan copy export --format json|md               # 导出文案框架（JSON / Markdown 表单）
@@ -145,6 +180,11 @@ uragan render out.mp4                             # 渲染视频（离线）
 uragan assets check                               # 资产体检
 uragan serve-mcp                                  # 启动 MCP Server（stdio）
 ```
+
+**三个入口行为一致**：CLI、MCP、TUI 打开工程都走同一条路 —— 目录工程聚合读，
+`.uragan` 单文件先导入到 `<源名>.uragan.work\` 再读。
+所以在 TUI 里改了但还没按 Ctrl+S 的内容，`uragan pages list -p 同一个文件` 也看得到；
+反过来，CLI / MCP 的写操作是显式操作，会**同时落工程目录并导出回原 `.uragan`**（等价于保存）。
 
 ### GUI（规划中）
 
@@ -165,7 +205,16 @@ uragan gui    # 预留入口：原生 GUI 模式未来提供（框架选型 Qt/G
 }
 ```
 
-Agent 按 `project_import → list_pages → reorder_pages → copy_export → copy_import → render_video` 即可自主走完 6 步闭环。
+Agent 按 `project_new`（或用 `project_import` 拿交换配置整体建/覆盖工程）→ `list_pages` → `reorder_pages` → `copy_export` → `copy_import` → `render_video` 即可自主走完 6 步闭环。
+
+**术语区分**（容易混）：
+
+- **打开工程** = 把任意文件源导入到工程目录。`.uragan` 单文件会导入到同级的 `<名字>.uragan.work\`，
+  原文件保留为持久文件 —— 等价于 TUI 的 `O` / `uragan tui -p`
+- **`project_import`** = 用交换配置（`$shared` 形态）**整体创建或覆盖**一个指定名字的工程：
+  能指定输出工程名、能覆盖已有工程，这是「打开」做不到的
+- **`project_export`** = 导出整体交换配置（`$shared` 去重视图），用于一次性整体改主色/字体等共享值；
+  工程本体不受影响，也不需要它来做持久化（持久化靠 `Ctrl+S` / 原 `.uragan`）
 
 #### 接入 TRAE（已实测握手与 15 个工具加载通过）
 

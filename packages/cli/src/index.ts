@@ -1,17 +1,20 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve, sep } from 'node:path';
+import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
-import type { Issue, ValidationReport } from '@uragan/shared';
+import type { Issue, ProjectFile, ValidationReport } from '@uragan/shared';
 import {
   Uragan,
   blankFile,
   exportSkeleton,
   exportSkeletonText,
+  outputDirFor,
   parseSkeletonText,
-  readProjectFile,
   withProjectExt,
   writeProjectFile,
+  type OpenResult,
 } from '@uragan/core';
 
 const program = new Command();
@@ -34,21 +37,79 @@ function reportOut(report: ValidationReport, msg: string): void {
   }
 }
 
-function loadFile(target: string) {
+/**
+ * 打开工程（与 TUI 同一套语义）：
+ * - 目录工程（<名>.uragan/ 或 <名>.uragan.work/）→ 聚合读取
+ * - .uragan 单文件 → 导入到 <源名>.uragan.work/ 工作目录后读取（原文件留作持久存储）
+ * 必须走这里而不是直接 readProjectFile，否则 CLI 读到的是可能已过期的持久文件，与 TUI 看到的内容不一致。
+ */
+function loadProject(target: string): OpenResult {
   const path = withProjectExt(target);
   if (!existsSync(path)) throw new Error(`工程文件不存在：${path}`);
-  return readProjectFile(path).file;
+  const r = Uragan.openProject(path);
+  if (r.report.errors.some((e) => e.severity === 'error') && r.file.pages.length === 0) {
+    throw new Error(r.report.errors.map((e) => `[${e.code}] ${e.message}`).join('；'));
+  }
+  return r;
 }
+
+/** 写回工程：落工程目录；有持久文件时一并导出回原 .uragan（CLI 是显式操作，等价于「保存」） */
+function saveProject(r: OpenResult, file: ProjectFile): void {
+  writeProjectFile(r.projectPath, file);
+  if (r.durablePath) writeProjectFile(r.durablePath, file);
+}
+
+/** 产出 / 资产目录（assets/、render.mp4） */
+const assetDir = (r: OpenResult): string => outputDirFor(r.projectPath, r.durablePath);
 
 function requireProject(opts: unknown): string {
   const o = opts as { project?: string };
   return o.project ?? 'project.uragan';
 }
 
+/** 是否交互终端（可进 TUI） */
+const isInteractive = (): boolean => Boolean(process.stdin.isTTY && process.stdout.isTTY);
+
+/** 命令行里是否显式指定了 -p/--project */
+function hasExplicitProject(): boolean {
+  return process.argv.some((a) => a === '-p' || a === '--project' || a.startsWith('--project=') || /^-p.+$/.test(a));
+}
+
+/**
+ * 安装目录保护：资源管理器双击 bin/uragan.cmd 时工作目录就是安装目录，
+ * 工程建在这里会在下次打包（rm -rf build/uragan）时被清空。
+ * 因此「未显式指定 -p 且当前目录位于安装目录内」时，切到用户工作区。
+ */
+function ensureWorkspace(): void {
+  const self = dirname(fileURLToPath(import.meta.url)); // <安装根>/node_modules/@uragan/cli/dist
+  const root = resolve(self, '..', '..', '..', '..'); // dist → cli → @uragan → node_modules → 安装根
+  const cwd = process.cwd();
+  if (cwd !== root && !cwd.startsWith(root + sep)) return;
+  const docs = join(homedir(), 'Documents');
+  const base = existsSync(docs) ? join(docs, 'UraGAN') : join(homedir(), 'UraGAN');
+  const dir = process.env.URAGAN_WORKDIR ? resolve(process.env.URAGAN_WORKDIR) : base;
+  if (dir === cwd) return;
+  try {
+    mkdirSync(dir, { recursive: true });
+    process.chdir(dir);
+    console.error(`⚠ 当前目录是程序安装目录，已切换到工作区：${dir}`);
+  } catch (e) {
+    console.error(`⚠ 无法切换到工作区 ${dir}：${(e as Error).message}`);
+  }
+}
+
+/** 启动 TUI 的统一入口（先做工作区保护，再交给 ink） */
+async function runTui(cmd: Command): Promise<void> {
+  if (!hasExplicitProject()) ensureWorkspace();
+  const target = requireProject(cmd.optsWithGlobals());
+  const { launchTui } = await import('./tui/index.js');
+  process.exitCode = await launchTui(target);
+}
+
 /* ========== 0 建工程 ========== */
 program
   .command('init')
-  .description('初始化空白工程文件')
+  .description('初始化空白工程（生成 <path>.uragan 目录工程，每页一个独立文件）')
   .argument('<path>', '输出路径（自动补 .uragan 后缀）')
   .option('--canvas <WxH>', '画布尺寸，如 1280x720', '1280x720')
   .option('--name <name>', '工程名')
@@ -70,9 +131,9 @@ program
 /* ========== 1/2 校验 + 导入展开 ========== */
 program
   .command('import')
-  .description('导入整体交换配置（或展开形工程文件）→ 工程文件')
+  .description('用交换配置（$shared 形态）整体创建或覆盖工程（可指定输出名；与「打开工程」不同：打开是导入到 .uragan.work 工作目录、原文件留作持久存储）')
   .argument('<config>', '配置文件路径（JSONC）')
-  .option('-o, --out <path>', '输出工程文件路径', 'project.uragan')
+  .option('-o, --out <path>', '输出工程路径（生成 <out>.uragan 目录工程）', 'project.uragan')
   .action((config: string, opts: { out: string }) => {
     let text: string;
     try {
@@ -89,11 +150,11 @@ program
 
 program
   .command('export')
-  .description('导出整体交换配置（dedup 重投影到 $shared）')
-  .argument('<path>', '工程文件路径')
+  .description('导出整体交换配置（$shared 去重视图：各页重复定义提取为共享池，便于一次性整体改主色/字体等共享值；工程本体不受影响）')
+  .argument('<path>', '工程路径（目录工程 或 .uragan 持久文件）')
   .option('-o, --out <path>', '输出配置路径', 'config.json')
   .action((path: string, opts: { out: string }) => {
-    const file = loadFile(path);
+    const file = loadProject(path).file;
     const { config } = Uragan.exportConfig(file);
     writeFileSync(opts.out, JSON.stringify(config, null, 2) + '\n', 'utf8');
     console.log(`已导出整体交换配置（$shared ${Object.keys(config.$shared).length} 项）→ ${opts.out}`);
@@ -120,7 +181,7 @@ pages
   .command('list')
   .description('按播放顺序列出页面')
   .action((_opts: unknown, cmd: Command) => {
-    const file = loadFile(requireProject(cmd.optsWithGlobals()));
+    const file = loadProject(requireProject(cmd.optsWithGlobals())).file;
     Uragan.listPages(file).forEach((p, i) => console.log(`${i + 1}. ${p.pageId}  ${p.name}  <${p.kind}>`));
   });
 pages
@@ -128,9 +189,10 @@ pages
   .description('调整播放顺序（挑选 + 排序）')
   .action((ids: string[], _opts: unknown, cmd: Command) => {
     const target = requireProject(cmd.optsWithGlobals());
-    const { file, report } = Uragan.reorder(loadFile(target), ids);
+    const opened = loadProject(target);
+    const { file, report } = Uragan.reorder(opened.file, ids);
     if (!report.ok) return reportOut(report, '');
-    writeProjectFile(target, file);
+    saveProject(opened, file);
     console.log(`已调整顺序：${file.pages.map((p) => p.pageId).join(' → ')}`);
   });
 
@@ -141,7 +203,7 @@ page
   .description('导出单个独立页（含头部 $defs）')
   .option('-o, --out <path>', '输出路径', 'page.json')
   .action((id: string, opts: { out: string }, cmd: Command) => {
-    const file = loadFile(requireProject(cmd.optsWithGlobals()));
+    const file = loadProject(requireProject(cmd.optsWithGlobals())).file;
     const p = Uragan.getPage(file, id);
     if (!p) return reportOut(issues([C('U-9004', `页 ${id} 不存在`)]), '');
     writeFileSync(opts.out, JSON.stringify(p, null, 2) + '\n', 'utf8');
@@ -164,9 +226,10 @@ page
       return reportOut(issues([C('U-1001', `解析 ${file} 失败`)]), '');
     }
     const target = requireProject(cmd.optsWithGlobals());
-    const { file: next, report } = Uragan.overwritePage(loadFile(target), pageInput);
+    const opened = loadProject(target);
+    const { file: next, report } = Uragan.overwritePage(opened.file, pageInput);
     if (!report.ok) return reportOut(report, '');
-    writeProjectFile(target, next);
+    saveProject(opened, next);
     console.log(`已覆盖页 ${id}`);
   });
 
@@ -178,7 +241,7 @@ copy
   .option('-o, --out <path>', '输出路径', 'skeleton.json')
   .option('--format <json|md>', '输出格式：json（默认）或 md（人读文本框架）', 'json')
   .action((opts: { out: string; format: string }, cmd: Command) => {
-    const file = loadFile(requireProject(cmd.optsWithGlobals()));
+    const file = loadProject(requireProject(cmd.optsWithGlobals())).file;
     if (opts.format === 'md') {
       const { text } = exportSkeletonText(file);
       writeFileSync(opts.out, text, 'utf8');
@@ -205,9 +268,10 @@ copy
       skeleton = parsed.skeleton;
     }
     const target = requireProject(cmd.optsWithGlobals());
-    const { file: next, report } = Uragan.applySkeleton(loadFile(target), skeleton);
+    const opened = loadProject(target);
+    const { file: next, report } = Uragan.applySkeleton(opened.file, skeleton);
     if (!report.ok) return reportOut(report, '');
-    writeProjectFile(target, next);
+    saveProject(opened, next);
     console.log('✓ 文案填充完成');
   });
 
@@ -217,7 +281,7 @@ shared
   .command('list')
   .description('查看当前 $shared（经 dedup 导出投影）')
   .action((_opts: unknown, cmd: Command) => {
-    const file = loadFile(requireProject(cmd.optsWithGlobals()));
+    const file = loadProject(requireProject(cmd.optsWithGlobals())).file;
     const { config } = Uragan.exportConfig(file);
     const keys = Object.keys(config.$shared);
     if (keys.length === 0) return console.log('（空）');
@@ -230,7 +294,7 @@ component
   .command('list')
   .description('列出全局组件')
   .action((_opts: unknown, cmd: Command) => {
-    const file = loadFile(requireProject(cmd.optsWithGlobals()));
+    const file = loadProject(requireProject(cmd.optsWithGlobals())).file;
     const list = file.components ?? [];
     if (list.length === 0) return console.log('（无组件）');
     for (const c of list) console.log(`${c.componentId}  ${c.name}  （$defs ${Object.keys(c.$defs).length} 项）`);
@@ -240,10 +304,11 @@ component
   .description('复制代码到页面：组件 code/$defs 并入目标页，断开父子关系')
   .action((pageId: string, componentId: string, _opts: unknown, cmd: Command) => {
     const target = requireProject(cmd.optsWithGlobals());
-    const { file, report } = Uragan.inlineComponent(loadFile(target), pageId, componentId);
+    const opened = loadProject(target);
+    const { file, report } = Uragan.inlineComponent(opened.file, pageId, componentId);
     const errors = report.errors.filter((e) => e.severity === 'error');
     if (errors.length > 0) return reportOut(report, '');
-    writeProjectFile(target, file);
+    saveProject(opened, file);
     const warns = report.errors.filter((e) => e.severity === 'warning');
     console.log(`已内联组件 ${componentId} → 页 ${pageId}`);
     for (const w of warns) console.log(`⚠ [${w.code}] ${w.message} @${w.path}`);
@@ -257,7 +322,8 @@ program
   .option('--codec <codec>', '视频编码：h264/h265/vp8/vp9', 'h264')
   .action(async (out: string, opts: { codec: string }, cmd: Command) => {
     const target = requireProject(cmd.optsWithGlobals());
-    const file = loadFile(target);
+    const opened = loadProject(target);
+    const file = opened.file;
     const { renderProject, vendoredBrowserPath } = await import('@uragan/render');
     const baked = vendoredBrowserPath();
     if (baked) console.log(`✓ 使用内置浏览器（离线渲染可用）：${baked}`);
@@ -265,7 +331,7 @@ program
     try {
       const { output, durationSeconds } = await renderProject(file, {
         output: out,
-        projectDir: dirname(target),
+        projectDir: assetDir(opened),
         codec: opts.codec as 'h264' | 'h265' | 'vp8' | 'vp9',
         verbose: true,
       });
@@ -283,9 +349,9 @@ program
   .description('校验资产引用（渲染前暴露失效引用）')
   .action(async (_opts: unknown, cmd: Command) => {
     const target = requireProject(cmd.optsWithGlobals());
-    const file = loadFile(target);
+    const opened = loadProject(target);
     const { checkAssets } = await import('@uragan/render');
-    const { ok, issues } = await checkAssets(file, dirname(target), 'assets');
+    const { ok, issues } = await checkAssets(opened.file, assetDir(opened), 'assets');
     if (issues.length === 0) return console.log('✓ 资产引用全部有效');
     for (const i of issues) console.log(`${i.severity === 'error' ? '[error]' : '[warn ]'} [${i.code}] ${i.message} @${i.path}`);
     if (!ok) process.exitCode = 1;
@@ -295,10 +361,28 @@ program
   .command('tui')
   .description('启动交互式终端界面（TUI，当前窗口渲染）')
   .action(async (_opts: unknown, cmd: Command) => {
-    const target = requireProject(cmd.optsWithGlobals());
-    const { launchTui } = await import('./tui/index.js');
-    process.exitCode = await launchTui(target);
+    await runTui(cmd);
   });
+
+/**
+ * 无子命令（典型：资源管理器双击 uragan.cmd）：
+ * - 交互终端 → 直接进 TUI（否则窗口一闪而过，看起来像「闪退」）
+ * - 非交互（管道/脚本）→ 打印帮助
+ * - 带未知操作数 → 报错（不误当 TUI 启动）
+ */
+program.action(async (_opts: unknown, cmd: Command) => {
+  const rest = cmd.args ?? [];
+  if (rest.length > 0) {
+    console.error(`error: 未知命令「${rest.join(' ')}」；可用 uragan --help 查看命令列表`);
+    process.exitCode = 1;
+    return;
+  }
+  if (!isInteractive()) {
+    program.outputHelp();
+    return;
+  }
+  await runTui(cmd);
+});
 
 program
   .command('gui')

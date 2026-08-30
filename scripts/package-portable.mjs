@@ -23,6 +23,11 @@ const OUT = join(ROOT, 'build', 'uragan');
 const LITE = process.argv.includes('--lite');
 const PKGS = ['shared', 'core', 'render', 'mcp', 'cli'];
 const OWN = '@uragan';
+const BIN_ONLY = process.argv.includes('--bin-only');
+
+// 相对 bin 的 JS 入口（%%~dp0.. = 分发包根）
+const relCli = [OWN, 'cli', 'dist', 'index.js'].join('/');
+const relMcp = [OWN, 'mcp', 'dist', 'cli.js'].join('/');
 
 /**
  * 依赖查找域：
@@ -102,6 +107,13 @@ async function pkgFile(name) {
   }
 }
 
+/* ---------------- 0) --bin-only：只重建入口，跳过构建与依赖拷贝 ---------------- */
+if (BIN_ONLY) {
+  const binDir = await writeBins();
+  console.log(`✔ 已重建入口：${binDir}`);
+  process.exit(0);
+}
+
 /* ---------------- 1) 先构建全部包（保证 dist 最新） ---------------- */
 const built = spawnSync('pnpm build', { cwd: ROOT, stdio: 'inherit', shell: true });
 if (built.error || built.status !== 0) {
@@ -178,28 +190,60 @@ for (const p of PKGS) {
 }
 
 /* ---------------- 6) 入口命令（Windows .cmd + sh） ---------------- */
-const binDir = join(OUT, 'bin');
-await mkdir(binDir, { recursive: true });
-
-// 相对 bin 的 JS 入口（%%~dp0.. = 分发包根）
-const relCli = [OWN, 'cli', 'dist', 'index.js'].join('/');
-const relMcp = [OWN, 'mcp', 'dist', 'cli.js'].join('/');
-/** cmd 包装：%~dp0.. 定位分发包根，再拼 node_modules/@uragan/... 目标 */
-const wrapCmd = (name, rel) =>
-  [
+/**
+ * cmd 包装：%~dp0.. 定位分发包根，再拼 node_modules/@uragan/... 目标。
+ * 额外处理两件「一看就像程序坏了」的事：
+ * 1) 缺 node：给出可读提示（否则双击只看到黑窗一闪，无从排查）
+ * 2) 双击启动：%CMDCMDLINE% 同时含 /c 与本脚本名 —— 此时失败要 pause，别让窗口直接消失
+ * pauseOnError：仅交互入口（uragan.cmd）开启；MCP 由客户端拉起，绝不能阻塞
+ */
+function wrapCmd(name, rel, { pauseOnError }) {
+  const lines = [
     '@echo off',
     'setlocal',
     `set "URA_PKG=%~dp0..\\node_modules\\@uragan"`,
+    'set "URA_DCLICK=0"',
+    'if defined CMDCMDLINE (',
+    '  echo %CMDCMDLINE% | findstr /i /c:"/c" >nul',
+    '  if not errorlevel 1 (',
+    `    echo %CMDCMDLINE% | findstr /i /c:"${name}.cmd" >nul`,
+    '    if not errorlevel 1 set "URA_DCLICK=1"',
+    '  )',
+    ')',
+    'where node >nul 2>nul',
+    'if errorlevel 1 (',
+    '  echo [UraGAN] 未检测到 node。请先安装 Node.js 20 及以上版本并确保 node 在 PATH 中。',
+    '  echo          下载： https://nodejs.org/',
+  ];
+  if (pauseOnError) lines.push('  if "%URA_DCLICK%"=="1" pause');
+  lines.push(
+    '  exit /b 1',
+    ')',
     `node "%URA_PKG%\\${rel.split('/').join('\\')}" %*`,
-    'exit /b %errorlevel%',
-  ].join('\r\n') + '\r\n';
-const wrapSh = (rel) =>
-  `#!/usr/bin/env sh\nBASE="$(CDPATH= cd -- "$(dirname -- "$0")/../node_modules/@uragan" && pwd)"\nexec node "$BASE/${rel}" "$@"\n`;
+    'set "URA_CODE=%errorlevel%"',
+  );
+  // 仅在「双击且没带参数」时暂停：脚本里 cmd /c uragan.cmd <子命令> 失败不该卡住等待按键
+  if (pauseOnError) lines.push('if not "%URA_CODE%"=="0" if "%URA_DCLICK%"=="1" if "%~1"=="" pause');
+  lines.push('exit /b %URA_CODE%');
+  return lines.join('\r\n') + '\r\n';
+}
 
-await writeFile(join(binDir, 'uragan.cmd'), wrapCmd('uragan', relCli.replace(`${OWN}/`, '')), 'utf8');
-await writeFile(join(binDir, 'uragan-mcp.cmd'), wrapCmd('uragan-mcp', relMcp.replace(`${OWN}/`, '')), 'utf8');
-await writeFile(join(binDir, 'uragan'), wrapSh(relCli.replace(`${OWN}/`, '')), 'utf8');
-await writeFile(join(binDir, 'uragan-mcp'), wrapSh(relMcp.replace(`${OWN}/`, '')), 'utf8');
+function wrapSh(rel) {
+  return `#!/usr/bin/env sh\nBASE="$(CDPATH= cd -- "$(dirname -- "$0")/../node_modules/@uragan" && pwd)"\nexec node "$BASE/${rel}" "$@"\n`;
+}
+
+/** 写 bin 入口（Windows .cmd + sh）；--bin-only 时只跑这一步，避免重拷 270MB 离线浏览器 */
+async function writeBins() {
+  const binDir = join(OUT, 'bin');
+  await mkdir(binDir, { recursive: true });
+  await writeFile(join(binDir, 'uragan.cmd'), wrapCmd('uragan', relCli.replace(`${OWN}/`, ''), { pauseOnError: true }), 'utf8');
+  await writeFile(join(binDir, 'uragan-mcp.cmd'), wrapCmd('uragan-mcp', relMcp.replace(`${OWN}/`, ''), { pauseOnError: false }), 'utf8');
+  await writeFile(join(binDir, 'uragan'), wrapSh(relCli.replace(`${OWN}/`, '')), 'utf8');
+  await writeFile(join(binDir, 'uragan-mcp'), wrapSh(relMcp.replace(`${OWN}/`, '')), 'utf8');
+  return binDir;
+}
+
+const binDir = await writeBins();
 
 /* ---------------- 7) 版本标记 ---------------- */
 await writeFile(

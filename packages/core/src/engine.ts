@@ -8,18 +8,31 @@ import { inlineComponent } from './inline.js';
 import { migrateData } from './migrate.js';
 import { parseJsonc } from './parser.js';
 import { issuesReport, okReport } from './report.js';
-import { isProjectDir, projectDirFor, readProjectDir, salvageProjectShape, writeProjectDir } from './store.js';
+import {
+  isDurableSource,
+  isProjectDir,
+  projectDirFor,
+  readProjectDir,
+  salvageProjectShape,
+  workingDirFor,
+  writeProjectDir,
+} from './store.js';
 import { validateProjectFile, zodIssues } from './validate.js';
 
 export type { CopySkeleton, ExchangeConfig, Page, ProjectFile, ValidationReport };
 
 export interface OpenResult {
-  /** 打开的工程路径（目录工程时指向目录） */
+  /** 打开的工程路径（目录工程时指向目录；.uragan 持久文件时指向其 <源名>.uragan.work/ 工作目录） */
   projectPath: string;
   file: ProjectFile;
   report: ValidationReport;
-  /** true = 源是配置文件，已自动展开并生成工程目录 */
+  /** true = 源是配置文件，本次已自动展开并生成工程目录（工作目录已存在时复用，为 false） */
   converted: boolean;
+  /**
+   * 持久文件（原 .uragan）：非空表示「工程在工作目录中进行，原文件承担持久存储」——
+   * 编辑实时写入工作目录，显式保存时才导出回这个文件。仅 .uragan 单文件源才有。
+   */
+  durablePath?: string;
 }
 
 /**
@@ -60,10 +73,11 @@ export class Uragan {
   }
 
   /**
-   * 打开工程（T2：不再维护易碎的“单文件内部形态”）：
-   * - 工程目录 → 聚合读取
-   * - 单文件（交换配置 / legacy .uragan）→ 自动展开，在同目录生成 <名>.uragan/ 工程目录并写入，
-   *   projectPath 指向新目录（“导入展开”落地为磁盘上的按页拆分文件）
+   * 打开工程：一律导入到工程目录中进行（T2：不再维护易碎的“单文件内部形态”）。
+   * - 工程目录（<名>.uragan/ 或 <名>.uragan.work/）→ 聚合读取
+   * - .uragan 单文件（整体工程 / 独立页面）→ **导入**：原地派生 <源名>.uragan.work/ 工作目录，
+   *   按页拆分成独立文件；原 .uragan 文件原样保留，承担持久存储（保存 = 导出回它）
+   * - 其它后缀（.json / .jsonc 交换配置）→ 展开成 <名>.uragan/ 目录，与原文件脱钩
    */
   static openProject(sourcePath: string): OpenResult {
     if (!sourcePath.trim()) {
@@ -87,10 +101,30 @@ export class Uragan {
     if (!imp.report.ok) {
       return { projectPath: sourcePath, file: imp.file, report: imp.report, converted: false };
     }
-    const dir = projectDirFor(sourcePath);
-    writeProjectDir(dir, imp.file);
+    // .uragan 单文件：原文件留下做持久存储，工程在派生的 <源名>.uragan.work/ 中进行
+    const durable = isDurableSource(sourcePath) ? sourcePath : undefined;
+    const dir = durable ? workingDirFor(durable) : projectDirFor(sourcePath);
+
+    // 工作目录已存在 → 直接接着用（里面可能有尚未导出回持久文件的改动，不能被重新导入覆盖）
+    if (isProjectDir(dir)) {
+      const r = readProjectDir(dir);
+      return { projectPath: dir, file: r.file, report: r.report, converted: false, durablePath: durable };
+    }
+    try {
+      writeProjectDir(dir, imp.file);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      // 落盘失败不应抛出：调用方（TUI）拿到 report 自行提示，进程不能崩
+      return {
+        projectPath: sourcePath,
+        file: imp.file,
+        report: issuesReport([{ code: 'U-9013', severity: 'error', path: '$', message: `导入到工作目录失败：${dir}（${message}）` }]),
+        converted: false,
+        durablePath: durable,
+      };
+    }
     const r = readProjectDir(dir);
-    return { projectPath: dir, file: r.file, report: r.report, converted: true };
+    return { projectPath: dir, file: r.file, report: r.report, converted: true, durablePath: durable };
   }
 
   /** 导出整体交换配置：工程文件 → dedup($shared) 形态 */

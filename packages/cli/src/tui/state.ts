@@ -11,6 +11,13 @@ export type View = 'pages' | 'shared' | 'components' | 'assets' | 'info';
 
 export interface TuiSnapshot {
   projectPath: string;
+  /**
+   * 持久文件（原 .uragan）：非空 = 本次是「打开 .uragan 导入到 <源名>.uragan.work/ 工作目录」，
+   * 编辑实时写入工作目录，Ctrl+S 才导出回这个文件。
+   */
+  durablePath?: string;
+  /** 有尚未导出回持久文件的改动（仅 durablePath 非空时有意义） */
+  dirty: boolean;
   file: ProjectFile;
   pageIndex: number;
   /** details 面板中选中的字段下标 */
@@ -25,9 +32,28 @@ export interface TuiSnapshot {
   toast: string;
 }
 
-export function snapshot(projectPath: string, file: ProjectFile): TuiSnapshot {
-  return { projectPath, file, pageIndex: 0, fieldIndex: 0, sub: 'pages', view: 'pages', itemIndex: 0, toast: '' };
+export function snapshot(projectPath: string, file: ProjectFile, durablePath?: string): TuiSnapshot {
+  return { projectPath, durablePath, dirty: false, file, pageIndex: 0, fieldIndex: 0, sub: 'pages', view: 'pages', itemIndex: 0, toast: '' };
 }
+
+/** 空载态工程标记：project.id === 'none'（未打开工程 / 已关闭工程） */
+export const UNOPENED_ID = 'none';
+
+/**
+ * 空载态快照（启动未找到工程 / X 关闭工程 共用）。
+ * 必须有这一档：启动打不开工程时若让 state 保持 undefined，界面会永远停在「正在启动…」。
+ */
+export function emptySnapshot(projectPath: string, toast = ''): TuiSnapshot {
+  const file: ProjectFile = {
+    schemaVersion: '1',
+    project: { id: UNOPENED_ID, name: '（未打开工程）', canvas: { width: 0, height: 0, fps: 0 } },
+    pages: [],
+  };
+  return { ...snapshot(projectPath, file), toast };
+}
+
+/** 是否处于空载态（无工程可操作，应提示 N 新建 / O 打开） */
+export const isUnopened = (s: TuiSnapshot): boolean => s.file.project.id === UNOPENED_ID && s.file.pages.length === 0;
 
 export const VIEW_LABEL: Record<View, string> = {
   pages: '页面',
@@ -161,10 +187,20 @@ export function sortFm(entries: FmEntry[]): FmEntry[] {
   });
 }
 
-/** 是否可打开为工程（新形态：目录工程 .uragan/ 或 配置文件/legacy 单文件） */
+/**
+ * 是否可打开为工程：
+ * - 目录：工程目录 .uragan/ 或 持久文件派生的工作目录 .uragan.work/
+ * - 文件：交换配置 .json/.jsonc 或 持久文件 .uragan（整体工程 / 独立页面）
+ */
 export function isOpenableProject(name: string, isDir: boolean): boolean {
-  if (isDir) return name.toLowerCase().endsWith('.uragan');
+  if (isDir) return isOpenableDir(name);
   return /\.(json|jsonc|uragan)$/i.test(name);
+}
+
+/** 可打开的工程目录名：.uragan（工程目录）/ .uragan.work（持久文件的工作目录） */
+export function isOpenableDir(name: string): boolean {
+  const n = name.toLowerCase();
+  return n.endsWith('.uragan') || n.endsWith('.uragan.work');
 }
 
 /** 文件管理器上次位置（进程内存记忆，T5：打开记忆上次目录） */

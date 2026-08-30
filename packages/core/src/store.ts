@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { extname, join } from 'node:path';
+import { dirname, extname, join } from 'node:path';
 import type { Component, Issue, Page, ProjectFile, ValidationReport } from '@uragan/shared';
-import { ExchangeConfigZ, PageZ, PROJECT_EXT, ProjectFileZ } from '@uragan/shared';
+import { ExchangeConfigZ, PageZ, PROJECT_EXT, ProjectFileZ, WORK_DIR_SUFFIX } from '@uragan/shared';
 import { expandExchange } from './expander.js';
 import { ensureCids } from './expander.js';
 import { migrateData } from './migrate.js';
@@ -73,10 +73,48 @@ export function isProjectDir(path: string): boolean {
   }
 }
 
+/** 是否存在且为普通文件（目录 / 不存在均返回 false） */
+export function isExistingFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
 /** 任意源路径 → 工程目录路径（name.uragan/ 目录形态）。promo.json → promo.uragan/ */
 export function projectDirFor(source: string): string {
   const ext = extname(source);
   return (ext ? source.slice(0, -ext.length) : source) + PROJECT_EXT;
+}
+
+/**
+ * 「.uragan 持久文件」→ 其工作目录（<源名>.uragan.work/）。
+ * 原文件要原样留着承担持久存储，目录只能另起名字 —— 文件与目录不能同名。
+ */
+export function workingDirFor(durablePath: string): string {
+  return durablePath + WORK_DIR_SUFFIX;
+}
+
+/** 是否工作目录名（供文件管理器等识别可打开的工程目录） */
+export function isWorkingDirName(path: string): boolean {
+  return path.toLowerCase().endsWith(PROJECT_EXT + WORK_DIR_SUFFIX);
+}
+
+/** 是否「.uragan 持久文件」：存在、是普通文件、且后缀为 .uragan */
+export function isDurableSource(path: string): boolean {
+  return isExistingFile(path) && path.toLowerCase().endsWith(PROJECT_EXT);
+}
+
+/**
+ * 产出 / 资产目录：用户的 assets/、render.mp4、导出单页都在这一层。
+ * - 有持久文件 → 原 .uragan 所在目录（工程目录只是内部的按页拆分区）
+ * - 否则 → 工程目录本身
+ * TUI / CLI / MCP 共用一份实现，避免三处各算一套导致行为不一致。
+ */
+export function outputDirFor(projectPath: string, durablePath?: string): string {
+  if (durablePath) return dirname(durablePath);
+  return isProjectDir(projectPath) ? projectPath : dirname(projectPath);
 }
 
 /** 独立文件 → 页（独立文件为单页 ProjectFile；兼容旧版「裸页」形态；无法解析返回 undefined） */
@@ -315,14 +353,16 @@ function isExchangeShape(data: unknown): boolean {
 /* 写回工程（自动识别形态：目录工程 / 新路径 .uragan → 目录；其它后缀 → 单文件）   */
 /* ------------------------------------------------------------------ */
 
-/** 写回工程（自动：目录 → 拆分写；.uragan 后缀 → 目录形态；其它 → 单文件 legacy） */
+/**
+ * 写回工程（形态由磁盘现状决定：目录 → 拆分写；不存在的 .uragan → 目录形态；其余 → 单文件 legacy）。
+ * 注意：同名的 legacy 单文件存在时必须保持单文件形态 —— 文件与目录不能同名，强行建目录必然 EEXIST。
+ */
 export function writeProjectFile(path: string, file: ProjectFile): void {
   if (isProjectDir(path)) {
     writeProjectDir(path, file);
     return;
   }
-  if (path.toLowerCase().endsWith(PROJECT_EXT)) {
-    // 目录形态工程：不存在则创建目录（含同名 legacy 单文件时目录与文件可共存）
+  if (!isExistingFile(path) && path.toLowerCase().endsWith(PROJECT_EXT)) {
     writeProjectDir(path, file);
     return;
   }

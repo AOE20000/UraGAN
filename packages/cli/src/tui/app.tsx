@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Text, useApp, useInput } from 'ink';
+import { Box, Text, useApp, useInput, type Key } from 'ink';
 import type { Issue, Page, ProjectFile } from '@uragan/shared';
 import {
   Uragan,
@@ -7,13 +7,14 @@ import {
   exportSkeleton,
   exportSkeletonText,
   isProjectDir,
+  outputDirFor,
   parseSkeletonText,
   readProjectFile,
   validateProjectFile,
   withProjectExt,
   writeProjectFile,
 } from '@uragan/core';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import {
   clip,
@@ -21,9 +22,11 @@ import {
   defSummary,
   displayValue,
   editInput,
+  emptySnapshot,
   fieldKind,
   fieldsOfPage,
   isOpenableProject,
+  isUnopened,
   lastFmDir,
   moveDown,
   moveUp,
@@ -73,14 +76,12 @@ export const SHORTCUTS: { k: string; t: string; color?: string }[] = [
   { k: 'S', t: '导出文案框架' },
   { k: 'I', t: '导入文案' },
   { k: 'R', t: '渲染视频' },
-  { k: 'E', t: '导出整体配置' },
-  { k: 'M', t: '导入配置' },
   { k: 'V', t: '校验', color: '#34d399' },
   { k: 'T', t: '资产体检', color: '#34d399' },
-  { k: 'U', t: '导入单页文件', color: '#34d399' },
   { k: 'O', t: '打开工程', color: '#fbbf24' },
   { k: 'N', t: '新建工程', color: '#fbbf24' },
   { k: 'X', t: '关闭工程', color: '#fbbf24' },
+  { k: 'Ctrl+S', t: '保存回原文件', color: '#34d399' },
   { k: 'Q', t: '退出', color: '#f87171' },
 ];
 
@@ -96,14 +97,16 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
   const [res, setRes] = useState<Progress>({ progress: 0, message: '' });
   /** 渲染进行中（用于防重入；完成/失败后复位，可再次渲染） */
   const [rendering, setRendering] = useState(false);
-  /** 会话子状态：new（新建）/import（导入配置）/pageImport（导入单页）+ fm（文件管理器）；null=正常浏览 */
-  const [session, setSession] = useState<'new' | 'import' | 'pageImport' | 'fm' | null>(null);
+  /** 会话子状态：new（新建工程）/ pageImport（导入单页）+ fm（文件管理器）；null=正常浏览 */
+  const [session, setSession] = useState<'new' | 'pageImport' | 'fm' | null>(null);
   /** 文件管理器（T5：打开工程改用内置 FM，O 进入） */
   const [fm, setFm] = useState<{ cwd: string; entries: FmEntry[]; sel: number } | null>(null);
   /** 校验/资产体检结果缓存（信息/资产视图展示） */
   const [report, setReport] = useState<{ issues: Issue[]; ok: boolean }>({ issues: [], ok: true });
   const [assetIssues, setAssetIssues] = useState<Issue[]>([]);
   const [assetOk, setAssetOk] = useState(true);
+  /** 退出确认：有未导出回持久文件的改动时，第一次 Q 只提示，再按一次才真的退出 */
+  const [quitArmed, setQuitArmed] = useState(false);
 
   useEffect(() => {
     if (state) return;
@@ -111,27 +114,55 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, projectPath]);
 
-  /** 打开工程（T2：目录工程聚合读；单文件自动展开为同名 <名>.uragan/ 目录后指向新目录） */
+  /**
+   * 打开工程：
+   * - 目录工程（<名>.uragan/ 或 <名>.uragan.work/）→ 聚合读取
+   * - .uragan 单文件（整体工程 / 独立页面）→ 导入到 <源名>.uragan.work/ 工作目录，原文件留作持久存储
+   * 任何 IO 异常都只转成提示：TUI 不能因为打不开一个文件就把整个进程崩掉。
+   */
   const openProject = (path: string): void => {
+    try {
+      applyOpen(path);
+    } catch (e) {
+      const why = `打开失败：${(e as Error).message}`;
+      setState((s) => (s ? { ...s, toast: why } : emptySnapshot(path, `${why} — 按 N 新建 / O 打开`)));
+    }
+  };
+
+  const applyOpen = (path: string): void => {
     const p = isProjectDir(path) ? path : withProjectExt(path);
     const r = Uragan.openProject(p);
     if (r.report.errors.some((e) => e.severity === 'error') && r.file.pages.length === 0) {
-      setState((s) => (s ? { ...s, toast: r.report.errors.map((e) => `[${e.code}] ${e.message}`).join('；') } : s));
+      const why = r.report.errors.map((e) => `[${e.code}] ${e.message}`).join('；');
+      setState((s) => (s ? { ...s, toast: why } : emptySnapshot(p, `${why} — 按 N 新建 / O 打开`)));
       return;
     }
     setReport({ issues: r.report.errors, ok: r.report.ok });
-    setState({
-      ...snapshot(r.projectPath, r.file),
-      toast: r.converted ? `已导入展开 → ${basename(r.projectPath)}（按页拆分落盘）` : `已打开 ${basename(r.projectPath)}`,
-    });
+    setQuitArmed(false);
+    const toast = r.durablePath
+      ? r.converted
+        ? `已导入 → 工作目录 ${basename(r.projectPath)}（原 ${basename(r.durablePath)} 保留为持久文件）`
+        : `已打开工作目录 ${basename(r.projectPath)}（持久文件 ${basename(r.durablePath)}）`
+      : r.converted
+        ? `已导入展开 → ${basename(r.projectPath)}（按页拆分落盘）`
+        : `已打开 ${basename(r.projectPath)}`;
+    setState({ ...snapshot(r.projectPath, r.file, r.durablePath), toast });
   };
 
-  /** 工程文件所在目录（目录工程 = 目录本身；单文件/legacy = 父目录）——相对路径资产/副产品以此为基准 */
-  const projectDir = (): string => {
-    const p = state?.projectPath ?? '';
-    return p && isProjectDir(p) ? p : dirname(p);
-  };
+  /** 工程所在目录（目录工程 = 目录本身）——相对路径资产/副产品以此为基准 */
+  /**
+   * 工程目录：工程本体（project.json + 每页独立文件 + components/）与文案框架 skeleton.* 都在这里。
+   * 有持久文件时就是派生的 <源名>.uragan.work\，否则就是目录工程本身。
+   */
+  const workDir = (): string => state?.projectPath ?? '';
 
+  /**
+   * 产出 / 资产目录：用户的 assets/、render.mp4、导出的单页文件都落在这里。
+   * 有持久文件 → 原 .uragan 所在目录（用户看得见的地方）；没有 → 工程目录本身。
+   */
+  const outputDir = (): string => (state ? outputDirFor(state.projectPath, state.durablePath) : '');
+
+  /** 编辑落盘：实时写入工程目录（工作目录）；有持久文件时标记为「未保存」 */
   const save = (file: ProjectFile, toast: string): void => {
     const p = state?.projectPath;
     if (!p) return;
@@ -140,7 +171,25 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
     } catch (e) {
       toast = `保存失败：${(e as Error).message}`;
     }
-    setState((s) => (s ? { ...s, file, toast } : s));
+    setState((s) => (s ? { ...s, file, toast, dirty: s.durablePath ? true : s.dirty } : s));
+  };
+
+  /** 保存 = 把工作目录的最新内容导出回持久文件（原 .uragan） */
+  const saveDurable = (): void => {
+    const s = state;
+    if (!s) return;
+    if (!s.durablePath) {
+      setState({ ...s, toast: '当前工程本身就是目录形态，编辑已实时落盘，无需再导出' });
+      return;
+    }
+    try {
+      const { file } = readProjectFile(s.projectPath); // 以工作目录为准（含所有实时改动）
+      writeProjectFile(s.durablePath, file);
+      setQuitArmed(false);
+      setState({ ...s, file, dirty: false, toast: `已保存 → ${basename(s.durablePath)}` });
+    } catch (e) {
+      setState({ ...s, toast: `保存失败：${(e as Error).message}` });
+    }
   };
 
   /* —— 文件管理器（T5：O 进入；目录/可开工程白名单展示，记忆上次位置）—— */
@@ -186,24 +235,27 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
     enterFmDir(parent);
   };
 
-  /** 导入单页文件（T4：对应导出单页 G；按 pageId 替换或追加） */
+  /**
+   * 导入单页文件（对应 G 导出单页）：按 pageId 替换同名页，否则追加。
+   * 工程目录本身也支持直接把页文件放进去自动吸收，这个入口用于从别处挑文件导入。
+   */
   const importPageFile = (path: string): void => {
+    const s = state;
+    if (!s) return;
     let text: string;
     try {
       text = readFileSync(path, 'utf8');
     } catch (e) {
-      setState((s) => (s ? { ...s, toast: `读取失败：${(e as Error).message}` } : s));
+      setState({ ...s, toast: `读取失败：${(e as Error).message}` });
       return;
     }
     let pageInput: unknown;
     try {
       pageInput = JSON.parse(text);
     } catch {
-      setState((s) => (s ? { ...s, toast: `解析失败：${path} 不是合法 JSON 单页文件` } : s));
+      setState({ ...s, toast: `解析失败：${path} 不是合法 JSON 单页文件` });
       return;
     }
-    const s = state;
-    if (!s) return;
     const r = Uragan.overwritePage(s.file, pageInput);
     if (!r.report.ok) {
       setState({ ...s, toast: `导入单页失败：${r.report.errors.map((e) => `[${e.code}] ${e.message}`).join('；')}` });
@@ -229,58 +281,13 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
     }
   };
 
-  /** 导入整体配置（交换配置或工程文件 JSONC）覆盖当前工程 */
-  const importConfig = (path: string): void => {
-    void (async () => {
-      try {
-        const { readFileSync } = await import('node:fs');
-        const text = readFileSync(path, 'utf8');
-        const { file, report } = Uragan.importFromText(text);
-        if (!report.ok) {
-          setState((s) => (s ? { ...s, toast: `导入失败：${report.errors.map((e) => `[${e.code}] ${e.message}`).join('；')}` } : s));
-          return;
-        }
-        // 写入当前工程（若已打开）否则落到配置同名 .uragan
-        const out = existsSync(state?.projectPath ?? '') ? state!.projectPath : withProjectExt(path.replace(/\.(json|jsonc)$/i, ''));
-        try {
-          writeProjectFile(out, file);
-        } catch {
-          /* 写入失败仍进入内存态 */
-        }
-        setState({ ...snapshot(out, file), toast: `已导入 ${file.pages.length} 页` });
-        const rep = validateProjectFile(file);
-        setReport({ issues: rep.errors, ok: rep.ok });
-      } catch (e) {
-        setState((s) => (s ? { ...s, toast: `导入失败：${(e as Error).message}` } : s));
-      }
-    })();
-  };
-
-  /** 导出整体交换配置（dedup 重投影 $shared） */
-  const exportConfig = (): void => {
-    const s = state;
-    if (!s) return;
-    const { config, report } = Uragan.exportConfig(s.file);
-    if (!report.ok) {
-      setState({ ...s, toast: `导出失败：${report.errors.map((e) => `[${e.code}] ${e.message}`).join('；')}` });
-      return;
-    }
-    const out = join(projectDir(), 'config.json');
-    try {
-      writeFileSync(out, JSON.stringify(config, null, 2) + '\n', 'utf8');
-      setState({ ...s, toast: `已导出整体交换配置（$shared ${Object.keys(config.$shared).length} 项）→ ${out}` });
-    } catch (e) {
-      setState({ ...s, toast: `导出失败：${(e as Error).message}` });
-    }
-  };
-
-  /** 导出当前单页为独立文件（含头部 $defs） */
+  /** 导出当前单页为独立文件（含头部 $defs）——落在产出目录，方便拿去给别人 */
   const exportPage = (): void => {
     const s = state;
     if (!s || s.file.pages.length === 0) return;
     const page = selectedPage(s);
     if (!page) return;
-    const out = join(projectDir(), `page-${page.pageId}.json`);
+    const out = join(outputDir(), `page-${page.pageId}.json`);
     try {
       writeFileSync(out, JSON.stringify(page, null, 2) + '\n', 'utf8');
       setState({ ...s, toast: `已导出单页 ${page.pageId} → ${out}` });
@@ -307,7 +314,7 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
       try {
         const { checkAssets, collectAssetRefs } = await import('@uragan/render');
         collectAssetRefs; // 仅用于展示引用
-        const r = await checkAssets(s.file, projectDir(), 'assets');
+        const r = await checkAssets(s.file, outputDir(), 'assets');
         setAssetIssues(r.issues);
         setAssetOk(r.ok);
         setState((cur) => (cur ? { ...cur, toast: r.issues.length === 0 ? '✓ 资产全部有效' : `发现 ${r.issues.filter((i) => i.severity === 'error').length} 个失效` } : cur));
@@ -337,17 +344,13 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
   const closeProject = (): void => {
     const s = state;
     if (!s) return;
-    const empty: ProjectFile = {
-      schemaVersion: '1',
-      project: { id: 'none', name: '（未打开工程）', canvas: { width: 0, height: 0, fps: 0 } },
-      pages: [],
-    };
-    setState({ ...snapshot(s.projectPath, empty), toast: '已关闭工程（O 重新打开）' });
+    setState({ ...emptySnapshot(s.projectPath), toast: '已关闭工程（O 重新打开）' });
     setReport({ issues: [], ok: true });
     setAssetIssues([]);
   };
 
-  useInput((input, key) => {
+  /** 按键处理（T5：文件管理器 / 会话输入 / 全局动作 / 字段编辑 / 视图切换） */
+  const handleInput = (input: string, key: Key): void => {
     const s = state;
     if (!s) return;
 
@@ -371,7 +374,7 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
       return;
     }
 
-    /* —— 会话输入态（N/M/U 触发；T1：IME 整词上屏 + 左右方向键移动光标）—— */
+    /* —— 会话输入态（N / U 触发；T1：IME 整词上屏 + 左右方向键移动光标）—— */
     if (session) {
       if (key.escape) {
         setSession(null);
@@ -384,10 +387,40 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
           setState({ ...s, toast: '未输入路径' });
         } else if (cur === 'new') {
           createProject(p);
-        } else if (cur === 'pageImport') {
-          importPageFile(p);
         } else {
-          importConfig(p);
+          importPageFile(p);
+        }
+      } else {
+        const e = editInput(draft, cursor, input, key);
+        if (e.text !== draft || e.cursor !== cursor) setEd(e);
+      }
+      return;
+    }
+
+    /* —— Ctrl+S 保存回原文件：编辑态也要能用，排在所有按键判定之前 —— */
+    if (key.ctrl && (input === 's' || input === 'S')) { saveDurable(); return; }
+
+    /* —— 字段编辑态（T1：IME 整词 + 方向键光标；数字 1-5 作为内容输入，不切视图）—— */
+    /* 必须排在全局动作键之前：否则 s/i/r/e/o/n/m/u/x… 会被快捷键吃掉，这些字母根本打不进字段值 */
+    if (s.sub === 'edit') {
+      if (key.escape) {
+        setState({ ...s, sub: 'fields', toast: '已取消编辑' });
+      } else if (key.return) {
+        const field = selectedField(s);
+        if (field) {
+          const kind = fieldKind(field.field);
+          const coerced = coerceValue(kind, draft);
+          if (coerced.ok) {
+            const file = structuredClone(s.file);
+            const page = file.pages[s.pageIndex];
+            if (page) page.content[field.name] = { ...field.field, value: coerced.value };
+            save(file, `已更新 ${field.name} = ${String(coerced.value)}`);
+            setState((cur) => (cur ? { ...cur, sub: 'fields' } : cur));
+          } else {
+            setState({ ...s, toast: `「${draft}」不是合法的 ${kind} 值` });
+          }
+        } else {
+          setState((cur) => (cur ? { ...cur, sub: 'fields' } : cur));
         }
       } else {
         const e = editInput(draft, cursor, input, key);
@@ -397,18 +430,26 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
     }
 
     /* —— 全局动作键（任意视图）—— */
-    if (input === 'q') { exit(); return; }
+    if (input === 'q') {
+      if (s.durablePath && s.dirty && !quitArmed) {
+        setQuitArmed(true);
+        setState({ ...s, toast: `有改动未导出回 ${basename(s.durablePath)}：Ctrl+S 保存，或再按一次 Q 直接退出（工作目录内容仍在）` });
+        return;
+      }
+      exit();
+      return;
+    }
+    setQuitArmed(false);
     if (input === 'o' || input === 'O') { enterFm(); return; }
     if (input === 'n' || input === 'N') { setEd({ text: 'project.uragan', cursor: 'project.uragan'.length }); setSession('new'); return; }
-    if (input === 'm' || input === 'M') { setEd({ text: 'config.json', cursor: 'config.json'.length }); setSession('import'); return; }
     if (input === 'u' || input === 'U') { setEd({ text: 'page.json', cursor: 'page.json'.length }); setSession('pageImport'); return; }
     if (input === 'x' || input === 'X') { closeProject(); return; }
-    if (input === 'e' || input === 'E') { exportConfig(); return; }
     if (input === 'v' || input === 'V') { runValidate(); return; }
     if (input === 't' || input === 'T') { runAssetsCheck(); return; }
-    if (input === 's' || input === 'S') { exportSkeletons(s.file, projectDir()); setState({ ...s, toast: '已导出文案框架：skeleton.json / skeleton.md' }); return; }
+    if (input === 's' || input === 'S') { exportSkeletons(s.file, workDir()); setState({ ...s, toast: '已导出文案框架：skeleton.json / skeleton.md' }); return; }
     if (input === 'i' || input === 'I') {
-      importSkeletons(s.file, projectDir(), s.projectPath, ({ toast, file }) => setState({ ...s, ...(file ? { file } : {}), toast }));
+      // 导入的内容经 save 落工程目录并标记未保存（导入本身就是一次改动）
+      importSkeletons(s.file, workDir(), s.projectPath, ({ toast, file }) => (file ? save(file, toast) : setState({ ...s, toast })));
       return;
     }
     if (input === 'r' || input === 'R') {
@@ -416,7 +457,7 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
       setRendering(true);
       setRes({ progress: 0, message: '渲染启动…' });
       const mark = ++renderSeq;
-      const pdir = projectDir();
+      const pdir = outputDir(); // 视频与资产都在产出目录（用户的目录）
       void (async () => {
         try {
           const { renderProject } = await import('@uragan/render');
@@ -442,34 +483,6 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
           if (mark === renderSeq) setRendering(false);
         }
       })();
-      return;
-    }
-
-    /* —— 字段编辑态（T1：IME 整词 + 方向键光标；数字 1-5 作为内容输入，不切视图）—— */
-    if (s.sub === 'edit') {
-      if (key.escape) {
-        setState({ ...s, sub: 'fields', toast: '已取消编辑' });
-      } else if (key.return) {
-        const field = selectedField(s);
-        if (field) {
-          const kind = fieldKind(field.field);
-          const coerced = coerceValue(kind, draft);
-          if (coerced.ok) {
-            const file = structuredClone(s.file);
-            const page = file.pages[s.pageIndex];
-            if (page) page.content[field.name] = { ...field.field, value: coerced.value };
-            save(file, `已更新 ${field.name} = ${String(coerced.value)}`);
-            setState((cur) => (cur ? { ...cur, sub: 'fields' } : cur));
-          } else {
-            setState({ ...s, toast: `「${draft}」不是合法的 ${kind} 值` });
-          }
-        } else {
-          setState((cur) => (cur ? { ...cur, sub: 'fields' } : cur));
-        }
-      } else {
-        const e = editInput(draft, cursor, input, key);
-        if (e.text !== draft || e.cursor !== cursor) setEd(e);
-      }
       return;
     }
 
@@ -514,6 +527,15 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
       if (c) inlineComponent(c.componentId);
       return;
     }
+  };
+
+  // 兜底：任何一次按键里的 IO 异常都只变成底部提示，绝不让 TUI 整体崩溃（丢掉未保存编辑）
+  useInput((input, key) => {
+    try {
+      handleInput(input, key);
+    } catch (e) {
+      setState((cur) => (cur ? { ...cur, toast: `操作失败：${(e as Error).message}` } : cur));
+    }
   });
 
   if (!state) {
@@ -537,7 +559,11 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
         <Text bold color={P.cyan}>◆ UraGAN</Text>
         <Text color={P.mute}>  </Text>
         <Text bold color={P.text}>{file.project.name}</Text>
-        <Text color={P.mute}>  {file.project.canvas.width}×{file.project.canvas.height}@{file.project.canvas.fps}</Text>
+        {isUnopened(state) ? (
+          <Text color={P.amber}>  未打开工程：N 新建 · O 打开</Text>
+        ) : (
+          <Text color={P.mute}>  {file.project.canvas.width}×{file.project.canvas.height}@{file.project.canvas.fps}</Text>
+        )}
         <Box marginLeft={3}>
           <Text color={P.mute}>页 </Text>
           <Text color={P.yellow} bold>{file.pages.length}</Text>
@@ -545,6 +571,9 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
           <Text color={P.green} bold>{total.toFixed(1)}s</Text>
           {report.issues.length > 0 ? (
             <Text color={report.ok ? P.green : P.red} bold> · {report.ok ? '✓ 校验通过' : `✗ ${report.issues.filter((i) => i.severity === 'error').length} 错`}</Text>
+          ) : null}
+          {state.durablePath ? (
+            <Text color={state.dirty ? P.amber : P.green} bold> · {state.dirty ? `● 未保存（Ctrl+S → ${basename(state.durablePath)}）` : `✓ 已同步 ${basename(state.durablePath)}`}</Text>
           ) : null}
         </Box>
       </Box>
@@ -592,7 +621,7 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
         ) : null}
         {session && session !== 'fm' ? (
           <Box flexDirection="row" flexWrap="wrap">
-            <Text color={P.amber} bold>{session === 'new' ? '新建工程' : session === 'pageImport' ? '导入单页文件' : '导入配置'}：</Text>
+            <Text color={P.amber} bold>{session === 'new' ? '新建工程' : '导入单页文件'}：</Text>
             <Text color={P.text}>{draft.slice(0, cursor)}<Text color={P.green} bold>▏</Text>{draft.slice(cursor)}</Text>
             <Text color={P.mute}>  Enter 确认 · Esc 取消 · ←→ 移光标 · Backspace 删除</Text>
           </Box>
@@ -606,8 +635,7 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
               <Text color={P.mute}>S 导出文案框架 · </Text>
               <Text color={P.mute}>I 导入文案 · </Text>
               <Text color={P.mute}>R 渲染视频 · </Text>
-              <Text color={P.mute}>E 导出整体配置 · </Text>
-              <Text color={P.mute}>M 导入配置 · </Text>
+              <Text color={P.mute}>Ctrl+S 保存回原文件 · </Text>
               <Text color={P.mute}>V 校验 · </Text>
               <Text color={P.mute}>T 资产体检</Text>
             </>
@@ -623,6 +651,7 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
             <Key k="←→" t="移动顺序" color={P.text} />
             <Key k="Enter" t="进入字段" color={P.text} />
             <Key k="G" t="导出单页文件" color={P.green} />
+            {/* U 只在页面视图的上下文键位里出现一次：再进全局 SHORTCUTS 就会重复显示两遍 */}
             <Key k="U" t="导入单页文件" color={P.green} />
           </>
         ) : state.view === 'components' ? (

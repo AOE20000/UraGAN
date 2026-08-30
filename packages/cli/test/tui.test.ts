@@ -9,6 +9,7 @@ import {
   editInput,
   fieldKind,
   fieldsOfPage,
+  isOpenableDir,
   isOpenableProject,
   isTextInputMode,
   lastFmDir,
@@ -38,7 +39,7 @@ function sampleFile() {
 
 describe('TUI 状态层（state.ts）', () => {
   const file = sampleFile();
-  const snap: TuiSnapshot = { projectPath: 'x.uragan', file, pageIndex: 1, fieldIndex: 0, sub: 'pages', view: 'pages', itemIndex: 0, toast: '' };
+  const snap: TuiSnapshot = { projectPath: 'x.uragan', dirty: false, file, pageIndex: 1, fieldIndex: 0, sub: 'pages', view: 'pages', itemIndex: 0, toast: '' };
 
   it('moveUp/moveDown 交换页面顺序（不修改 in place）', () => {
     const up = moveUp(sampleFile(), 1);
@@ -69,7 +70,7 @@ describe('TUI 状态层（state.ts）', () => {
   });
 
   it('fieldKind / displayValue / clip', () => {
-    const f = selectedField({ path: '', file, pageIndex: 0, fieldIndex: 0, sub: 'fields', view: 'pages', itemIndex: 0, toast: '' })!;
+    const f = selectedField({ projectPath: '', dirty: false, file, pageIndex: 0, fieldIndex: 0, sub: 'fields', view: 'pages', itemIndex: 0, toast: '' })!;
     expect(fieldKind(f.field)).toBe('text');
     expect(displayValue(f.field)).toBe('你的品牌');
     const count = fieldsOfPage(file.pages[0]!)[1]!;
@@ -83,7 +84,7 @@ describe('TUI 状态层（state.ts）', () => {
 describe('TUI 快捷键清单（SHORTCUTS 完整、不简写、无「骨架」）', () => {
   it('全部功能名完整展开且不使用「骨架」翻译', () => {
     const names = SHORTCUTS.map((s) => s.t);
-    for (const expectName of ['导出文案框架', '导入文案', '渲染视频', '导出整体配置', '导入配置', '校验', '资产体检', '打开工程', '新建工程', '关闭工程', '退出']) {
+    for (const expectName of ['导出文案框架', '导入文案', '渲染视频', '校验', '资产体检', '打开工程', '新建工程', '关闭工程', '保存回原文件', '退出']) {
       expect(names).toContain(expectName);
     }
     // 不允许出现「骨架」
@@ -91,6 +92,19 @@ describe('TUI 快捷键清单（SHORTCUTS 完整、不简写、无「骨架」�
     // 键唯一且都非空
     expect(new Set(SHORTCUTS.map((s) => s.k)).size).toBe(SHORTCUTS.length);
     for (const s of SHORTCUTS) expect(s.t.length).toBeGreaterThan(1);
+  });
+
+  it('旧设计遗留的入口已移除（导出整体配置 / 导入配置）', () => {
+    const names = SHORTCUTS.map((s) => s.t);
+    // 交换配置不再是工程载体：整体配置导出 = Ctrl+S 导出回原 .uragan；导入配置 = O 打开工程
+    expect(names).not.toContain('导出整体配置');
+    expect(names).not.toContain('导入配置');
+  });
+
+  it('导入单页不在全局快捷键表里（否则页面视图会显示两个一样的 U）', () => {
+    // U 是页面级操作，只由页面视图的上下文键位渲染；全局表再列一遍就会重复出现两次
+    expect(SHORTCUTS.map((s) => s.k)).not.toContain('U');
+    expect(SHORTCUTS.map((s) => s.t)).not.toContain('导入单页文件');
   });
 });
 
@@ -171,6 +185,14 @@ describe('TUI 文件管理器（T5：排序 / 可开工程判定 / 上次位置�
     expect(isOpenableProject('cfg.jsonc', false)).toBe(true);
     expect(isOpenableProject('notes.txt', true)).toBe(false);
     expect(isOpenableProject('page.png', false)).toBe(false);
+  });
+
+  it('isOpenableProject：持久文件派生的工作目录 .uragan.work 也可开（工程实际在这里进行）', () => {
+    expect(isOpenableProject('promo.uragan.work', true)).toBe(true);
+    expect(isOpenableDir('promo.uragan.work')).toBe(true);
+    expect(isOpenableDir('promo.uragan')).toBe(true);
+    expect(isOpenableDir('promo')).toBe(false);
+    expect(isOpenableDir('whatever.work')).toBe(false); // 裸 .work 不算工程目录
   });
 
   it('lastFmDir/rememberFmDir：内存记忆上次位置，未记住时回退', () => {

@@ -358,8 +358,8 @@ CLI 将同一报告渲染为人类可读文本（`U-1021 error: …建议: …`�
 | CLI | MCP tool | 对应工作流步骤 |
 |---|---|---|
 | `uragan init <dir> [--canvas WxH]` | `project_new` | 0（建工程）|
-| `uragan import <config.json> -p <out.uragan>` | `project_import` | 2 导入展开 |
-| `uragan export config -o config.json` | `project_export` | 导出整体交换配置（dedup 重投影，README 导出逻辑）|
+| `uragan import <config.json> -o <out.uragan>` | `project_import` | 2 导入展开：用交换配置整体创建/覆盖工程（可指定输出名、可覆盖已有工程；与「打开工程」不同，见 §5.1）|
+| `uragan export <工程> -o config.json` | `project_export` | 导出整体交换配置（$shared 去重视图，供整体迭代设计；工程本体不受影响）|
 | `uragan validate <config.json>` | （并入 import）| 1 配置校验 |
 | `uragan pages list` | `list_pages` | 3 |
 | `uragan pages reorder p03 p01 p02` | `reorder_pages` | 3 选择排序 |
@@ -373,6 +373,19 @@ CLI 将同一报告渲染为人类可读文本（`U-1021 error: …建议: …`�
 | `uragan serve-mcp` | — | 启动 MCP Server（stdio）|
 
 所有命令支持 `--json` 输出（供脚本/AI 使用）与 `--dry-run`（预览不改写）。
+
+### 5.1 术语：打开工程 vs project_import（别混淆）
+
+新模型（详见 README「持久文件与工作目录」）：
+
+- **打开工程**（TUI `O` / `uragan tui -p` / 其余 CLI 与 MCP 工具的读路径）：一律走 `Uragan.openProject`
+  —— 目录工程聚合读；`.uragan` 单文件导入到同级的 `<名字>.uragan.work\` 工作目录，
+  **原文件原样保留、承担持久存储**。工程本体与文案框架在工作目录里，资产与产出物在原文件旁。
+- **`project_import` / `uragan import`**：用交换配置（`$shared` 形态）**整体创建或覆盖**一个指定名字的工程。
+  它能指定输出工程名、能覆盖已存在的工程 —— 这是「打开工程」做不到的（打开遇到已存在的工程目录会直接接着用）。
+
+**写回约定**：CLI / MCP 是显式操作，写回时同时落工程目录并导出回持久文件（等价于「保存」）；
+TUI 的编辑只实时落工程目录，需 `Ctrl+S` 才导出回持久文件。
 
 ---
 
@@ -401,10 +414,11 @@ uragan render
 - **能力注记**：`server.setRequestHandler(ListToolsRequestSchema …)` 按 §5 工具表注册；`server.setRequestHandler(CallToolRequestSchema …)` 转发到 core 门面，参数以严格 union 定义（zod 解析，错误以 `isError` 结构返回并附 U 码报告）。
 - **输出约定**：所有工具默认返回 JSON（复用校验报告格式），成功时附简短人类可读文本；批量/长任务（render）v1 同步执行，预留 `render_status` 查询式长任务接口（注记文档，异步实现列入 v1.1）。
 - **MCP 外工作流建议**（写入 MCP README + 项目说明，让 Agent 能自主闭环）：
-  1. `project_import` 导入 AI 生成的配置
+  1. `project_new` 建空白目录工程，或 `project_import` 用 AI 生成的交换配置整体创建/覆盖工程
   2. `list_pages` → `reorder_pages` 排序
   3. `copy_export` 拿骨架 → 自己填文案 → `copy_import`
-  4. `render_video` 出片。若需改单页设计：`page_get` 拿到独立页 → 修改 → `page_overwrite`；若需**整体迭代设计**：`project_export` 导出整体配置 → 修改（继续用 $shared 去重写法）→ `project_import` 重新展开。
+  4. `render_video` 出片。若需改单页设计：`page_get` 拿到独立页 → 修改 → `page_overwrite`（pageId 不存在则追加为新页）；若需**整体迭代设计**：`project_export` 导出整体交换配置（$shared 去重视图）→ 修改共享值 → `project_import` 重新展开覆盖工程。
+  - 术语区分：**打开工程** = 把任意文件源导入到工程目录（`.uragan` 单文件 → `<名字>.uragan.work\`，原文件保留为持久文件）；**project_import** = 用交换配置整体创建或覆盖一个指定名字的工程。两者不是一回事。
 
 ---
 
@@ -412,7 +426,8 @@ uragan render
 
 ```
 [1]生成配置  用户: 开发文档+需求 → AI → 整体交换配置(含 $shared)   【软件外】
-[2]导入展开  import → 深拷贝 $shared→每页$defs → 补 cid → 校验(不变量1) → 写工程文件(.uragan)
+[2]导入展开  project_import → 深拷贝 $shared→每页$defs → 补 cid → 校验(不变量1) → 写工程目录(.uragan\)
+            （打开 .uragan 单文件走的是同一条展开，但输出到 <名字>.uragan.work\ 且保留原文件，见 §5.1）
 [3]选择排序  pages list/reorder → pages 数组顺序（单权威）
 [4]导出框架  copy export → 骨架JSON（按 schema 的 copy:true 字段）
 [5]导入填充  AI 填骨架 → copy import → 按 cid 替换 → 类型校验 → 错误则回传报告

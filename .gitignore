@@ -9,6 +9,8 @@ build/
 # 渲染产物 / 工程文件（用户工程不入库）
 *.mp4
 *.uragan
+# 打开 .uragan 持久文件时派生的内部工作目录（*.uragan 匹配不到，需单独排除）
+*.uragan.work/
 render.mp4
 page-*.json
 skeleton.json

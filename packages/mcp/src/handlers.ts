@@ -1,7 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { Uragan, blankFile, exportSkeletonText, parseSkeletonText, readProjectFile, withProjectExt, writeProjectFile } from '@uragan/core';
-import type { ValidationReport } from '@uragan/shared';
+import { Uragan, blankFile, exportSkeletonText, outputDirFor, parseSkeletonText, withProjectExt, writeProjectFile, type OpenResult } from '@uragan/core';
+import type { ProjectFile, ValidationReport } from '@uragan/shared';
 
 /**
  * MCP 工具处理器（纯函数，返回 { ok, text }，可由 index.ts 包装为 CallToolResult）。
@@ -27,17 +26,30 @@ function reportText(report: ValidationReport, fallback: string): string {
   return errors.map((e) => `[${e.code}] ${e.message} @${e.path}${e.hint ? `（${e.hint}）` : ''}`).join('\n');
 }
 
-type Loaded = { ok: true; file: ReturnType<typeof readProjectFile>['file']; dir: string } | FailResult;
+type Opened = { ok: true } & OpenResult & { dir: string };
+type Loaded = Opened | FailResult;
 
+/**
+ * 打开工程（与 CLI / TUI 同一套语义）：
+ * - 目录工程 → 聚合读取
+ * - .uragan 单文件 → 导入到 <源名>.uragan.work/ 工作目录后读取（原文件留作持久存储）
+ * 不能直接用 readProjectFile，否则读到的是可能已过期的持久文件，与其他入口看到的内容不一致。
+ */
 function load(path: string): Loaded {
   const resolved = withProjectExt(path);
   if (!existsSync(resolved)) return fail(`工程文件不存在：${resolved}`);
   try {
-    const { file } = readProjectFile(resolved);
-    return { ok: true, file, dir: dirname(resolved) };
+    const r = Uragan.openProject(resolved);
+    return { ...r, ok: true as const, dir: outputDirFor(r.projectPath, r.durablePath) };
   } catch (e: unknown) {
     return fail(`读取 ${resolved} 失败：${(e as Error).message}`);
   }
+}
+
+/** 写回工程：落工程目录；有持久文件时一并导出回原 .uragan（工具调用是显式操作，等价于「保存」） */
+function save(r: Opened, file: ProjectFile): void {
+  writeProjectFile(r.projectPath, file);
+  if (r.durablePath) writeProjectFile(r.durablePath, file);
 }
 
 function write(out: string, data: unknown): void {
@@ -125,7 +137,7 @@ export function reorderPages(a: ReorderPagesArgs): ToolResult {
   if (!r.ok) return r;
   const { file, report } = Uragan.reorder(r.file, a.ids);
   if (!report.ok) return fail(reportText(report, '调整失败'));
-  writeProjectFile(withProjectExt(a.path ?? 'project.uragan'), file);
+  save(r, file);
   return ok(`已调整顺序：${file.pages.map((p) => p.pageId).join(' → ')}`);
 }
 
@@ -166,7 +178,7 @@ export function pageOverwrite(a: PageOverwriteArgs): ToolResult {
   }
   const { file, report } = Uragan.overwritePage(r.file, input);
   if (!report.ok) return fail(reportText(report, '覆盖失败'));
-  writeProjectFile(withProjectExt(a.path ?? 'project.uragan'), file);
+  save(r, file);
   return ok(`已覆盖页 ${a.pageId}`);
 }
 
@@ -217,7 +229,7 @@ export function copyImport(a: CopyImportArgs): ToolResult {
   }
   const { file, report } = Uragan.applySkeleton(r.file, skeleton as Parameters<typeof Uragan.applySkeleton>[1]);
   if (!report.ok) return fail(reportText(report, '文案填充失败'));
-  writeProjectFile(withProjectExt(a.path ?? 'project.uragan'), file);
+  save(r, file);
   return ok('文案填充完成');
 }
 
@@ -257,7 +269,7 @@ export function componentInline(a: ComponentInlineArgs): ToolResult {
   if (!r.ok) return r;
   const { file, report } = Uragan.inlineComponent(r.file, a.pageId, a.componentId);
   if (!report.ok) return fail(reportText(report, '内联失败'));
-  writeProjectFile(withProjectExt(a.path ?? 'project.uragan'), file);
+  save(r, file);
   const warns = report.errors.filter((e) => e.severity === 'warning');
   return warns.length > 0
     ? ok(`已内联组件 ${a.componentId} → 页 ${a.pageId}\n⚠ ${warns.map((w) => `[${w.code}] ${w.message}`).join('\n⚠ ')}`)

@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ExchangeConfig, Page, ProjectFile } from '@uragan/shared';
@@ -10,6 +10,7 @@ import {
   exportSkeletonText,
   isProjectDir,
   normalizeGroupOrder,
+  outputDirFor,
   parseSkeletonText,
   readProjectFile,
   registerMigration,
@@ -502,5 +503,123 @@ describe('T6 宽松化：缺 $defs 不再返回空占位工程', () => {
     // 空工程渲染守卫：无页面时明确报错而非静默 0s
     const blank = Uragan.importFromText(JSON.stringify({ schemaVersion: '1', project: { id: 'e', name: '空', canvas: { width: 800, height: 450, fps: 30 } }, pages: [] }));
     expect(blank.file.pages).toHaveLength(0);
+  });
+});
+
+describe('.uragan 持久文件 → <源名>.uragan.work 工作目录', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'uragan-core-durable-'));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  /** 造一个 .uragan 单文件：整体工程（多页）或独立页面（单页）都走同一条流程 */
+  function writeSource(name: string, pages = 1): string {
+    const p = join(dir, name);
+    const list = Array.from({ length: pages }, (_, i) => ({
+      pageId: `p0${i + 1}`,
+      name: `页${i + 1}`,
+      kind: 'hero',
+      $defs: {},
+      content: { title: { cid: `c000${i + 1}`, copy: true, kind: 'text', value: `值${i + 1}` } },
+      animations: [],
+    }));
+    writeFileSync(
+      p,
+      JSON.stringify({
+        schemaVersion: '1',
+        project: { id: 'win11', name: 'Win11 宣传', canvas: { width: 1920, height: 1080, fps: 30 } },
+        pages: list,
+      }),
+      'utf8',
+    );
+    return p;
+  }
+
+  it('打开整体工程文件：原地派生 .uragan.work 工作目录，原文件保留为持久文件', () => {
+    const src = writeSource('win11-promo.uragan', 2);
+    const r = Uragan.openProject(src);
+    expect(r.projectPath).toBe(`${src}.work`);
+    expect(r.durablePath).toBe(src);
+    expect(r.converted).toBe(true);
+    expect(r.file.pages).toHaveLength(2);
+    expect(statSync(src).isFile()).toBe(true); // 原文件必须还在（承担持久存储）
+    expect(isProjectDir(r.projectPath)).toBe(true);
+    expect(existsSync(join(r.projectPath, 'p01.uragan'))).toBe(true); // 按页拆成独立文件
+  });
+
+  it('打开独立页面文件（单页 .uragan）：同样按「导入 → 工作目录」处理', () => {
+    const src = writeSource('single-page.uragan', 1);
+    const r = Uragan.openProject(src);
+    expect(r.projectPath).toBe(`${src}.work`);
+    expect(r.durablePath).toBe(src);
+    expect(r.file.pages).toHaveLength(1);
+    expect(statSync(src).isFile()).toBe(true);
+  });
+
+  it('改动实时进工作目录，未保存时持久文件保持原样', () => {
+    const src = writeSource('live-edit.uragan', 1);
+    const r = Uragan.openProject(src);
+    const next = structuredClone(r.file);
+    next.pages[0]!.content.title.value = '改过的标题';
+    writeProjectFile(r.projectPath, next);
+    expect(readProjectFile(r.projectPath).file.pages[0]!.content.title.value).toBe('改过的标题');
+    expect(readProjectFile(src).file.pages[0]!.content.title.value).toBe('值1');
+  });
+
+  it('保存 = 导出回持久文件：原文件仍是文件且内容更新', () => {
+    const src = writeSource('save-back.uragan', 1);
+    const r = Uragan.openProject(src);
+    const next = structuredClone(r.file);
+    next.pages[0]!.content.title.value = '改过的标题';
+    writeProjectFile(r.projectPath, next);
+    writeProjectFile(r.durablePath!, readProjectFile(r.projectPath).file); // Ctrl+S 做的事
+    expect(statSync(src).isFile()).toBe(true);
+    expect(readProjectFile(src).file.pages[0]!.content.title.value).toBe('改过的标题');
+  });
+
+  it('再次打开：复用已存在的工作目录，未导出的改动不丢（converted=false）', () => {
+    const src = writeSource('resume.uragan', 1);
+    Uragan.openProject(src);
+    const work = `${src}.work`;
+    const f = readProjectFile(work).file;
+    f.pages[0]!.content.title.value = '未导出的改动';
+    writeProjectFile(work, f);
+
+    const r2 = Uragan.openProject(src);
+    expect(r2.converted).toBe(false);
+    expect(r2.projectPath).toBe(work);
+    expect(r2.durablePath).toBe(src);
+    expect(r2.file.pages[0]!.content.title.value).toBe('未导出的改动'); // 不能被重新导入覆盖
+  });
+
+  it('.json 交换配置源：仍展开成 <名>.uragan/ 目录，不带持久文件', () => {
+    const src = writeSource('promo-src.uragan', 1);
+    const json = join(dir, 'promo.json');
+    writeFileSync(json, JSON.stringify(readProjectFile(src).file), 'utf8');
+    const r = Uragan.openProject(json);
+    expect(r.projectPath).toBe(join(dir, 'promo.uragan'));
+    expect(r.durablePath).toBeUndefined();
+    expect(isProjectDir(r.projectPath)).toBe(true);
+  });
+
+  it('新建工程（磁盘上不存在）直接落成目录工程，不带持久文件', () => {
+    const p = join(dir, 'brand-new.uragan');
+    writeProjectFile(p, Uragan.openProject(writeSource('seed.uragan', 1)).file);
+    expect(isProjectDir(p)).toBe(true);
+    expect(Uragan.openProject(p).durablePath).toBeUndefined();
+  });
+
+  it('outputDirFor（TUI/CLI/MCP 共用）：有持久文件 → 原文件所在目录；没有 → 工程目录本身', () => {
+    const src = writeSource('outdir.uragan', 1);
+    const r = Uragan.openProject(src);
+    expect(outputDirFor(r.projectPath, r.durablePath)).toBe(dir); // 指向原 .uragan 所在目录，不是工作目录
+    expect(outputDirFor(r.projectPath, undefined)).toBe(r.projectPath); // 无持久文件 → 工程目录本身
+  });
+
+  it('导入落盘失败 → 转成 report 错误，不向外抛出', () => {
+    const src = writeSource('boom.uragan', 1);
+    writeFileSync(`${src}.work`, 'not-a-dir', 'utf8'); // 工作目录名被普通文件占住 → 必然失败
+    expect(() => Uragan.openProject(src)).not.toThrow();
+    const r = Uragan.openProject(src);
+    expect(r.report.errors.some((e) => e.code === 'U-9013' && e.severity === 'error')).toBe(true);
+    expect(r.durablePath).toBe(src);
   });
 });

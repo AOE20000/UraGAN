@@ -45,21 +45,23 @@ function registerAll(server: McpServer): void {
 
   reg(
     'project_new',
-    '创建空白工程文件（步骤0）：生成 .uragan 工程',
+    '创建空白工程（步骤0）：生成 <名字>.uragan 目录工程（每页一个独立文件）',
     { path: pathOpt(), name: z.string().optional(), canvas: z.string().optional(), fps: z.number().optional() },
     (a: { path?: string; name?: string; canvas?: string; fps?: number }) => projectNew(a),
   );
 
   reg(
     'project_import',
-    '导入整体交换配置或工程文件（步骤2 导入展开）',
+    '用交换配置（$shared 形态）整体创建或覆盖工程（步骤2 导入展开）：可指定输出工程名，也可覆盖已存在的工程。'
+      + '与「打开工程」不同 —— 打开 .uragan 单文件是导入到 <名字>.uragan.work 工作目录、原文件保留为持久文件。',
     { configPath: z.string(), out: pathOpt() },
     (a: { configPath: string; out?: string }) => projectImport(a),
   );
 
   reg(
     'project_export',
-    '导出整体交换配置（dedup 重投影到 $shared，步骤2 反向）',
+    '导出整体交换配置（步骤2 反向）：把各页重复的定义去重投影成 $shared 共享池，'
+      + '适合一次性整体改主色/字体等共享值。这只是导出去改的视图，工程本体仍在工程目录里。',
     { path: pathOpt(), out: pathOpt() },
     (a: { path?: string; out?: string }) => projectExport(a),
   );
@@ -137,12 +139,14 @@ export function createServer(): McpServer {
       capabilities: { tools: {} },
       instructions: [
         'UraGAN 动画视频生成：6 步闭环建议流程如下——',
-        '1) project_new 建工程，或 project_import 导入 AI 生成的交换配置；',
+        '1) project_new 建空白目录工程，或 project_import 用交换配置整体创建/覆盖工程；',
         '2) list_pages → reorder_pages 挑选并排序播放顺序；',
         '3) copy_export 导出文案框架 → 自行填充 → copy_import 填回；',
         '4) render_video 出片。',
-        '改单页设计：page_get 拿到独立页 JSON → 修改 → page_overwrite 覆盖；',
-        '整体迭代设计：project_export 导出整体配置 → 修改（$shared 去重写法）→ project_import 重新展开。',
+        '工程形态：目录工程 <名字>.uragan/（每页一个独立文件）；'
+          + '打开 .uragan 单文件时工程实际在 <名字>.uragan.work/ 工作目录中进行，原文件保留为持久文件，改动需显式导出回它。',
+        '改单页设计：page_get 拿到独立页 JSON → 修改 → page_overwrite 覆盖（pageId 不存在则追加为新页）；',
+        '整体迭代设计：project_export 导出整体交换配置（$shared 去重视图）→ 修改共享值 → project_import 重新展开覆盖工程。',
       ].join('\n'),
     },
   );

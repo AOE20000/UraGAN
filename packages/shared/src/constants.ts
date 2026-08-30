@@ -4,6 +4,13 @@ export const SCHEMA_VERSION = '1' as const;
 /** 工程文件扩展名（单个直接可读的 JSON） */
 export const PROJECT_EXT = '.uragan';
 
+/**
+ * 工作目录后缀：打开「.uragan 持久文件」时，工程实际在 <源名>.uragan.work/ 目录中进行，
+ * 原 .uragan 文件保留下来承担持久存储（Ctrl+S / 保存 = 导出回它）。
+ * 两者必须不同名 —— 文件与目录不能同名。
+ */
+export const WORK_DIR_SUFFIX = '.work';
+
 /** 定义引用前缀。ref = "defs/<key>"：交换配置解析 $shared，展开后解析本页 $defs。 */
 export const REF_PREFIX = 'defs/';
 

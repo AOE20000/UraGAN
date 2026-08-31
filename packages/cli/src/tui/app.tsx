@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Text, useApp, useInput, type Key } from 'ink';
+import { Box, Text, useApp, useInput, useStdout, type Key } from 'ink';
 import type { Issue, Page, ProjectFile } from '@uragan/shared';
 import {
   Uragan,
@@ -14,8 +14,9 @@ import {
   withProjectExt,
   writeProjectFile,
 } from '@uragan/core';
-import { basename, dirname, join } from 'node:path';
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve, sep } from 'node:path';
+import { homedir } from 'node:os';
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import {
   clip,
   coerceValue,
@@ -32,22 +33,31 @@ import {
   moveUp,
   pageRows,
   pageStats,
+  pushLog,
   rememberFmDir,
   selectedField,
   selectedPage,
   snapshot,
   sortFm,
   VIEW_LABEL,
+  viewWindow,
   type FieldView,
   type FmEntry,
+  type LogLevel,
   type TuiSnapshot,
   type View,
 } from './state.js';
 
-/* ---------------- 主题：背景块 + 文字（黑/白终端背景都清晰，无需边框） ---------------- */
+/* ---------------- 主题：深色应用面板（黑/白终端背景都清晰） ---------------- */
 const P = {
-  panel: '#1e293b', // 面板底色（深块，白/黑背景上都醒目）
-  panelActive: '#3730a3', // 焦点面板底色（深靛蓝）
+  frame: '#475569', // 外框线
+  bg: '#0f172a', // 根背景（深蓝黑，比面板更深，形成层次）
+  panel: '#1e293b', // 面板底色
+  active: '#3730a3', // 焦点面板/页签（深靛蓝）
+  hilite: '#4f46e5', // 选中行（亮一档，与焦点面板区分）
+  brand: '#6366f1', // 品牌块底色
+  line: '#334155', // 分隔线
+  keyCap: '#0b1220', // 键帽底色
   text: '#e2e8f0',
   mute: '#94a3b8',
   green: '#34d399',
@@ -69,7 +79,7 @@ interface TuiAppProps {
   projectPath: string;
 }
 
-const VIEW_KEYS: Record<string, View> = { '1': 'pages', '2': 'shared', '3': 'components', '4': 'assets', '5': 'info' };
+const VIEW_KEYS: Record<string, View> = { '1': 'pages', '2': 'shared', '3': 'components', '4': 'assets', '5': 'info', '6': 'log' };
 
 /** 全局快捷键清单（UI 由此渲染，保证功能名完整、可单测） */
 export const SHORTCUTS: { k: string; t: string; color?: string }[] = [
@@ -89,6 +99,10 @@ let renderSeq = 0;
 
 export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
   const { exit } = useApp();
+  /** 终端尺寸：整屏绘制（布局固定为一行一屏，长内容在主体区内部裁剪，不被顶出屏幕） */
+  const { stdout } = useStdout();
+  const rows = stdout.rows ?? 24;
+  const cols = stdout.columns ?? 80;
   const [state, setState] = useState<TuiSnapshot>();
   /** 输入态：文本 + 光标位置（T1：IME 整词上屏、方向键移动光标共用同一状态） */
   const [ed, setEd] = useState<{ text: string; cursor: number }>({ text: '', cursor: 0 });
@@ -99,8 +113,10 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
   const [rendering, setRendering] = useState(false);
   /** 会话子状态：new（新建工程）/ pageImport（导入单页）+ fm（文件管理器）；null=正常浏览 */
   const [session, setSession] = useState<'new' | 'pageImport' | 'fm' | null>(null);
-  /** 文件管理器（T5：打开工程改用内置 FM，O 进入） */
+  /** 文件管理器（O 进入；目录/全部文件展示，记忆上次位置） */
   const [fm, setFm] = useState<{ cwd: string; entries: FmEntry[]; sel: number } | null>(null);
+  /** 文件管理器「路径直达」输入态：非 null = 正在输入目标路径（/ 触发，Enter 跳转，Esc 取消） */
+  const [fmPath, setFmPath] = useState<string | null>(null);
   /** 校验/资产体检结果缓存（信息/资产视图展示） */
   const [report, setReport] = useState<{ issues: Issue[]; ok: boolean }>({ issues: [], ok: true });
   const [assetIssues, setAssetIssues] = useState<Issue[]>([]);
@@ -125,7 +141,7 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
       applyOpen(path);
     } catch (e) {
       const why = `打开失败：${(e as Error).message}`;
-      setState((s) => (s ? { ...s, toast: why } : emptySnapshot(path, `${why} — 按 N 新建 / O 打开`)));
+      setState((s) => (s ? withLog({ ...s, toast: why }, why, 'err') : emptySnapshot(path, `${why} — 按 N 新建 / O 打开`)));
     }
   };
 
@@ -134,7 +150,7 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
     const r = Uragan.openProject(p);
     if (r.report.errors.some((e) => e.severity === 'error') && r.file.pages.length === 0) {
       const why = r.report.errors.map((e) => `[${e.code}] ${e.message}`).join('；');
-      setState((s) => (s ? { ...s, toast: why } : emptySnapshot(p, `${why} — 按 N 新建 / O 打开`)));
+      setState((s) => (s ? withLog({ ...s, toast: why }, why, 'err') : emptySnapshot(p, `${why} — 按 N 新建 / O 打开`)));
       return;
     }
     setReport({ issues: r.report.errors, ok: r.report.ok });
@@ -146,7 +162,8 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
       : r.converted
         ? `已导入展开 → ${basename(r.projectPath)}（按页拆分落盘）`
         : `已打开 ${basename(r.projectPath)}`;
-    setState({ ...snapshot(r.projectPath, r.file, r.durablePath), toast });
+    const base = snapshot(r.projectPath, r.file, r.durablePath);
+    setState({ ...withLog(base, toast, 'ok'), toast });
   };
 
   /** 工程所在目录（目录工程 = 目录本身）——相对路径资产/副产品以此为基准 */
@@ -161,6 +178,9 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
    * 有持久文件 → 原 .uragan 所在目录（用户看得见的地方）；没有 → 工程目录本身。
    */
   const outputDir = (): string => (state ? outputDirFor(state.projectPath, state.durablePath) : '');
+
+  /** 追加操作日志（日志视图展示）：返回带 log 的新快照 */
+  const withLog = (s: TuiSnapshot, msg: string, level: LogLevel = 'info'): TuiSnapshot => ({ ...s, log: pushLog(s.log, msg, level) });
 
   /** 编辑落盘：实时写入工程目录（工作目录）；有持久文件时标记为「未保存」 */
   const save = (file: ProjectFile, toast: string): void => {
@@ -179,27 +199,28 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
     const s = state;
     if (!s) return;
     if (!s.durablePath) {
-      setState({ ...s, toast: '当前工程本身就是目录形态，编辑已实时落盘，无需再导出' });
+      setState(withLog({ ...s, toast: '当前工程本身就是目录形态，编辑已实时落盘，无需再导出' }, '当前工程为目录形态，编辑实时落盘，无需导出'));
       return;
     }
     try {
       const { file } = readProjectFile(s.projectPath); // 以工作目录为准（含所有实时改动）
       writeProjectFile(s.durablePath, file);
       setQuitArmed(false);
-      setState({ ...s, file, dirty: false, toast: `已保存 → ${basename(s.durablePath)}` });
+      const msg = `已保存 → ${basename(s.durablePath)}`;
+      setState(withLog({ ...s, file, dirty: false, toast: msg }, msg, 'ok'));
     } catch (e) {
-      setState({ ...s, toast: `保存失败：${(e as Error).message}` });
+      const msg = `保存失败：${(e as Error).message}`;
+      setState(withLog({ ...s, toast: msg }, msg, 'err'));
     }
   };
 
-  /* —— 文件管理器（T5：O 进入；目录/可开工程白名单展示，记忆上次位置）—— */
+  /* —— 文件管理器（O 进入；目录/全部文件展示，可开工程打标，记忆上次位置）—— */
   const listFm = (dir: string): FmEntry[] | undefined => {
     try {
       const raw = readdirSync(dir, { withFileTypes: true });
+      // 目录 + 全部文件都展示（文件管理视角）；可开工程（.uragan/.json/.jsonc/工程目录）打标
       return sortFm(
-        raw
-          .map((d) => ({ name: d.name, isDir: d.isDirectory(), isProject: isOpenableProject(d.name, d.isDirectory()) }))
-          .filter((e) => e.isDir || e.isProject),
+        raw.map((d) => ({ name: d.name, isDir: d.isDirectory(), isProject: isOpenableProject(d.name, d.isDirectory()) })),
       );
     } catch {
       return undefined;
@@ -207,32 +228,69 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
   };
 
   const enterFmDir = (dir: string, toast = ''): void => {
-    const entries = listFm(dir);
+    const abs = resolve(dir); // 归一化绝对路径（路径提示需要；也避免相对路径依赖 cwd）
+    const entries = listFm(abs);
     if (!entries) {
-      setState((cur) => (cur ? { ...cur, toast: `无法读取目录：${dir}` } : cur));
+      setState((cur) => (cur ? { ...cur, toast: `无法读取目录：${abs}` } : cur));
       return;
     }
-    rememberFmDir(dir);
-    setFm({ cwd: dir, entries, sel: 0 });
+    rememberFmDir(abs);
+    setFm({ cwd: abs, entries, sel: 0 });
     setSession('fm');
     if (toast) setState((cur) => (cur ? { ...cur, toast } : cur));
   };
 
-  /** 进入文件管理器：起始目录 = 上次位置，否则当前工程所在目录（记忆上次位置） */
+  /**
+   * 进入文件管理器：起始目录优先级：
+   * 1) 工程已打开 → 工程产出目录（资产/导出物所在，最常操作）
+   * 2) 本次进程已记忆的上次位置
+   * 3) 当前目录；若 cwd 是程序自身目录（双击 exe / 在 exe 目录里运行），退回用户主目录
+   */
   const enterFm = (): void => {
-    const base = state?.projectPath ? dirname(state.projectPath) : process.cwd();
-    enterFmDir(lastFmDir(base));
+    if (state && !isUnopened(state)) {
+      enterFmDir(outputDirFor(state.projectPath, state.durablePath));
+      return;
+    }
+    const remembered = lastFmDir('');
+    if (remembered) {
+      enterFmDir(remembered);
+      return;
+    }
+    const cwd = process.cwd();
+    const selfDir = dirname(process.execPath);
+    const base = cwd === selfDir || cwd.startsWith(selfDir + sep) ? homedir() : cwd;
+    enterFmDir(base);
   };
 
-  /** 上级目录（已到根则退出） */
+  /** 上级目录（已到根则提示，不再退出） */
   const goUpFm = (): void => {
     if (!fm) return;
     const parent = dirname(fm.cwd);
     if (parent === fm.cwd) {
-      setSession(null);
+      setState((cur) => (cur ? { ...cur, toast: '已在根目录' } : cur));
       return;
     }
     enterFmDir(parent);
+  };
+
+  /** 路径直达：绝对路径跳转（支持盘符根如 D:\）；不存在/非目录给出提示 */
+  const jumpFmPath = (raw: string): void => {
+    const p = raw.trim();
+    setFmPath(null);
+    if (!p) {
+      setState((cur) => (cur ? { ...cur, toast: '未输入路径' } : cur));
+      return;
+    }
+    const abs = resolve(p);
+    if (!existsSync(abs)) {
+      setState((cur) => (cur ? { ...cur, toast: `路径不存在：${p}` } : cur));
+      return;
+    }
+    if (!statSync(abs).isDirectory()) {
+      setState((cur) => (cur ? { ...cur, toast: `不是目录：${p}` } : cur));
+      return;
+    }
+    enterFmDir(abs, `已跳转：${abs}`);
   };
 
   /**
@@ -246,19 +304,22 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
     try {
       text = readFileSync(path, 'utf8');
     } catch (e) {
-      setState({ ...s, toast: `读取失败：${(e as Error).message}` });
+      const msg = `读取失败：${(e as Error).message}`;
+      setState(withLog({ ...s, toast: msg }, msg, 'err'));
       return;
     }
     let pageInput: unknown;
     try {
       pageInput = JSON.parse(text);
     } catch {
-      setState({ ...s, toast: `解析失败：${path} 不是合法 JSON 单页文件` });
+      const msg = `解析失败：${path} 不是合法 JSON 单页文件`;
+      setState(withLog({ ...s, toast: msg }, msg, 'err'));
       return;
     }
     const r = Uragan.overwritePage(s.file, pageInput);
     if (!r.report.ok) {
-      setState({ ...s, toast: `导入单页失败：${r.report.errors.map((e) => `[${e.code}] ${e.message}`).join('；')}` });
+      const msg = `导入单页失败：${r.report.errors.map((e) => `[${e.code}] ${e.message}`).join('；')}`;
+      setState(withLog({ ...s, toast: msg }, msg, 'err'));
       return;
     }
     const pageId = (pageInput as { pageId?: string } | undefined)?.pageId ?? '?';
@@ -268,16 +329,20 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
   const createProject = (path: string): void => {
     const p = withProjectExt(path);
     if (existsSync(p)) {
-      setState((s) => (s ? { ...s, toast: `已存在：${p}` } : s));
+      const msg = `已存在：${p}`;
+      setState((s) => (s ? withLog({ ...s, toast: msg }, msg, 'warn') : s));
       return;
     }
     const file = blankFile();
     file.project.name = basename(p).replace(/\.[^.]+$/, '') || '未命名';
     try {
       writeProjectFile(p, file);
-      setState({ ...snapshot(p, file), toast: `已新建 ${basename(p)}` });
+      const msg = `已新建 ${basename(p)}`;
+      const base = snapshot(p, file);
+      setState({ ...withLog(base, msg, 'ok'), toast: msg });
     } catch (e) {
-      setState((s) => (s ? { ...s, toast: `新建失败：${(e as Error).message}` } : s));
+      const msg = `新建失败：${(e as Error).message}`;
+      setState((s) => (s ? withLog({ ...s, toast: msg }, msg, 'err') : s));
     }
   };
 
@@ -290,9 +355,11 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
     const out = join(outputDir(), `page-${page.pageId}.json`);
     try {
       writeFileSync(out, JSON.stringify(page, null, 2) + '\n', 'utf8');
-      setState({ ...s, toast: `已导出单页 ${page.pageId} → ${out}` });
+      const msg = `已导出单页 ${page.pageId} → ${out}`;
+      setState(withLog({ ...s, toast: msg }, msg, 'ok'));
     } catch (e) {
-      setState({ ...s, toast: `导出失败：${(e as Error).message}` });
+      const msg = `导出失败：${(e as Error).message}`;
+      setState(withLog({ ...s, toast: msg }, msg, 'err'));
     }
   };
 
@@ -302,14 +369,16 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
     if (!f) return;
     const rep = validateProjectFile(f);
     setReport({ issues: rep.errors, ok: rep.ok });
-    setState((s) => (s ? { ...s, toast: rep.ok ? '✓ 校验通过' : `校验发现 ${rep.errors.filter((e) => e.severity === 'error').length} 个错误` } : s));
+    const nErr = rep.errors.filter((e) => e.severity === 'error').length;
+    const msg = rep.ok ? '✓ 校验通过' : `校验发现 ${nErr} 个错误`;
+    setState((s) => (s ? withLog({ ...s, toast: msg }, msg, rep.ok ? 'ok' : 'err') : s));
   };
 
   /** 资产体检（render 层） */
   const runAssetsCheck = (): void => {
     const s = state;
     if (!s) return;
-    setState({ ...s, toast: '资产体检中…' });
+    setState(withLog({ ...s, toast: '资产体检中…' }, '资产体检开始'));
     void (async () => {
       try {
         const { checkAssets, collectAssetRefs } = await import('@uragan/render');
@@ -317,9 +386,11 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
         const r = await checkAssets(s.file, outputDir(), 'assets');
         setAssetIssues(r.issues);
         setAssetOk(r.ok);
-        setState((cur) => (cur ? { ...cur, toast: r.issues.length === 0 ? '✓ 资产全部有效' : `发现 ${r.issues.filter((i) => i.severity === 'error').length} 个失效` } : cur));
+        const msg = r.issues.length === 0 ? '✓ 资产全部有效' : `发现 ${r.issues.filter((i) => i.severity === 'error').length} 个失效`;
+        setState((cur) => (cur ? withLog({ ...cur, toast: msg }, msg, r.ok ? 'ok' : 'warn') : cur));
       } catch (e) {
-        setState((cur) => (cur ? { ...cur, toast: `资产体检失败：${(e as Error).message}` } : cur));
+        const msg = `资产体检失败：${(e as Error).message}`;
+        setState((cur) => (cur ? withLog({ ...cur, toast: msg }, msg, 'err') : cur));
       }
     })();
   };
@@ -334,7 +405,8 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
     const pageId = s.file.pages[s.pageIndex]!.pageId;
     const { file, report } = Uragan.inlineComponent(s.file, pageId, componentId);
     if (!report.ok) {
-      setState({ ...s, toast: `内联失败：${report.errors.map((e) => `[${e.code}] ${e.message}`).join('；')}` });
+      const msg = `内联失败：${report.errors.map((e) => `[${e.code}] ${e.message}`).join('；')}`;
+      setState(withLog({ ...s, toast: msg }, msg, 'err'));
       return;
     }
     save(file, `已内联 ${componentId} → ${pageId}`);
@@ -344,7 +416,7 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
   const closeProject = (): void => {
     const s = state;
     if (!s) return;
-    setState({ ...emptySnapshot(s.projectPath), toast: '已关闭工程（O 重新打开）' });
+    setState({ ...withLog(emptySnapshot(s.projectPath), '已关闭工程'), toast: '已关闭工程（O 重新打开）' });
     setReport({ issues: [], ok: true });
     setAssetIssues([]);
   };
@@ -354,11 +426,21 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
     const s = state;
     if (!s) return;
 
-    /* —— 文件管理器（T5：O 打开工程；↑↓ 选择、Enter 进入/打开、Backspace 上级、Esc 关闭）—— */
+    /* —— 文件管理器（O 打开工程；↑↓ 选择、Enter 进入/打开、Backspace 上级、/ 路径直达、H 主目录、Esc 关闭）—— */
     if (session === 'fm' && fm) {
-      if (key.escape || (key.backspace && dirname(fm.cwd) === fm.cwd)) { setSession(null); setState({ ...s, toast: '已关闭文件管理器' }); return; }
+      // 路径直达输入态：全部按键进输入框（IME 整词同字段编辑），Enter 跳转、Esc 取消
+      if (fmPath !== null) {
+        if (key.escape) { setFmPath(null); return; }
+        if (key.return) { jumpFmPath(fmPath); return; }
+        const r = editInput(fmPath, fmPath.length, input, { leftArrow: key.leftArrow, rightArrow: key.rightArrow, backspace: key.backspace, ctrl: key.ctrl, meta: key.meta });
+        setFmPath(r.text);
+        return;
+      }
+      if (key.escape) { setSession(null); setState({ ...s, toast: '已关闭文件管理器' }); return; }
       if (key.upArrow || input === 'k') { setFm({ ...fm, sel: Math.max(0, fm.sel - 1) }); return; }
       if (key.downArrow || input === 'j') { setFm({ ...fm, sel: Math.min(Math.max(0, fm.entries.length - 1), fm.sel + 1) }); return; }
+      if (input === '/') { setFmPath(''); return; }
+      if (input === 'h' || input === 'H') { enterFmDir(homedir(), `主目录：${homedir()}`); return; }
       if (key.return) {
         const e = fm.entries[fm.sel];
         if (!e) return;
@@ -446,10 +528,17 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
     if (input === 'x' || input === 'X') { closeProject(); return; }
     if (input === 'v' || input === 'V') { runValidate(); return; }
     if (input === 't' || input === 'T') { runAssetsCheck(); return; }
-    if (input === 's' || input === 'S') { exportSkeletons(s.file, workDir()); setState({ ...s, toast: '已导出文案框架：skeleton.json / skeleton.md' }); return; }
+    if (input === 's' || input === 'S') {
+      exportSkeletons(s.file, workDir());
+      const msg = '已导出文案框架：skeleton.json / skeleton.md';
+      setState(withLog({ ...s, toast: msg }, msg, 'ok'));
+      return;
+    }
     if (input === 'i' || input === 'I') {
       // 导入的内容经 save 落工程目录并标记未保存（导入本身就是一次改动）
-      importSkeletons(s.file, workDir(), s.projectPath, ({ toast, file }) => (file ? save(file, toast) : setState({ ...s, toast })));
+      importSkeletons(s.file, workDir(), s.projectPath, ({ toast, file }) =>
+        file ? save(file, toast) : setState(withLog({ ...s, toast }, toast, 'err')),
+      );
       return;
     }
     if (input === 'r' || input === 'R') {
@@ -472,12 +561,14 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
           });
           if (mark === renderSeq) {
             setRes({ progress: 1, message: `完成 → ${out}（${r.durationSeconds.toFixed(1)}s）` });
-            setState((cur) => (cur ? { ...cur, toast: `渲染完成，${r.durationSeconds.toFixed(1)}s` } : cur));
+            const msg = `渲染完成，${r.durationSeconds.toFixed(1)}s`;
+            setState((cur) => (cur ? withLog({ ...cur, toast: msg }, `渲染完成 → ${out}`, 'ok') : cur));
           }
         } catch (e) {
           if (mark === renderSeq) {
             setRes({ progress: 0, message: '' });
-            setState((cur) => (cur ? { ...cur, toast: `渲染失败：${(e as Error).message}` } : cur));
+            const msg = `渲染失败：${(e as Error).message}`;
+            setState((cur) => (cur ? withLog({ ...cur, toast: msg }, msg, 'err') : cur));
           }
         } finally {
           if (mark === renderSeq) setRendering(false);
@@ -486,9 +577,12 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
       return;
     }
 
-    /* —— 视图切换 —— */
+    /* —— 视图切换（log 视图默认定位到最新日志）—— */
     const v = VIEW_KEYS[input];
-    if (v) { setState({ ...s, view: v, sub: 'pages', itemIndex: 0 }); return; }
+    if (v) {
+      setState({ ...s, view: v, sub: 'pages', itemIndex: v === 'log' ? Math.max(0, s.log.length - 1) : 0 });
+      return;
+    }
 
     if (s.view === 'pages') {
       /* —— 页面视图内部 —— */
@@ -510,8 +604,24 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
       }
       if (key.upArrow || input === 'k') { setState({ ...s, pageIndex: Math.max(0, s.pageIndex - 1), fieldIndex: 0 }); return; }
       if (key.downArrow || input === 'j') { setState({ ...s, pageIndex: Math.min(Math.max(0, s.file.pages.length - 1), s.pageIndex + 1), fieldIndex: 0 }); return; }
-      if (key.leftArrow || input === 'h') { const f2 = moveUp(s.file, s.pageIndex); if (f2 !== s.file) save(f2, `上移：${f2.pages[s.pageIndex]?.name ?? ''}`); return; }
-      if (key.rightArrow || input === 'l') { const f3 = moveDown(s.file, s.pageIndex); if (f3 !== s.file) save(f3, `下移：${f3.pages[s.pageIndex]?.name ?? ''}`); return; }
+      if (key.leftArrow || input === 'h') {
+        const f2 = moveUp(s.file, s.pageIndex);
+        if (f2 !== s.file) {
+          const name = f2.pages[s.pageIndex]?.name ?? '';
+          save(f2, `上移：${name}`);
+          setState((cur) => (cur ? withLog(cur, `上移页面：${name}`) : cur));
+        }
+        return;
+      }
+      if (key.rightArrow || input === 'l') {
+        const f3 = moveDown(s.file, s.pageIndex);
+        if (f3 !== s.file) {
+          const name = f3.pages[s.pageIndex]?.name ?? '';
+          save(f3, `下移：${name}`);
+          setState((cur) => (cur ? withLog(cur, `下移页面：${name}`) : cur));
+        }
+        return;
+      }
       if (key.tab || key.return) { if (s.file.pages.length > 0) setState({ ...s, sub: 'fields', fieldIndex: 0 }); return; }
       if (input === 'g' || input === 'G') { exportPage(); return; }
       return;
@@ -551,20 +661,39 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
   const pages = pageRows(file);
   const total = pages.reduce((a, r) => a + r.duration, 0);
   const hasPages = file.pages.length > 0;
+  /** 状态行可用宽度（扣除边框/内边距/前缀符号） */
+  const statusW = Math.max(16, cols - 14);
+  /**
+   * 主体区每栏可视行数（保守估算）。
+   * 注意：ink 的 overflowY hidden 在内容超高时会「均匀丢行」（非连续裁剪底部），
+   * 因此窗口行数必须保证 标题1 + 上下提示2 + 窗口 ≤ 主体实际可用行数（rows - 固定块 ≈ rows - 16，
+   * 再留快捷键栏折行/会话输入等余量）→ rows - 20。
+   */
+  const bodyLimit = Math.max(3, rows - 20);
 
   return (
-    <Box flexDirection="column" width="100%">
-      {/* 头部：品牌 + 工程 + 校验徽章（背景块） */}
-      <Box backgroundColor={P.panel} paddingX={2} paddingY={0}>
-        <Text bold color={P.cyan}>◆ UraGAN</Text>
-        <Text color={P.mute}>  </Text>
-        <Text bold color={P.text}>{file.project.name}</Text>
+    <Box
+      flexDirection="column"
+      width="100%"
+      height={rows}
+      borderStyle="round"
+      borderColor={P.frame}
+      backgroundColor={P.bg}
+      paddingX={1}
+      paddingY={1}
+    >
+      {/* ① 顶栏：品牌块 + 工程 + 统计（固定） */}
+      <Box flexDirection="row" flexWrap="wrap" alignItems="center">
+        <Box backgroundColor={P.brand} paddingX={1}>
+          <Text bold color="#ffffff">◆ UraGAN</Text>
+        </Box>
+        <Text bold color={P.text}>  {file.project.name}</Text>
         {isUnopened(state) ? (
           <Text color={P.amber}>  未打开工程：N 新建 · O 打开</Text>
         ) : (
           <Text color={P.mute}>  {file.project.canvas.width}×{file.project.canvas.height}@{file.project.canvas.fps}</Text>
         )}
-        <Box marginLeft={3}>
+        <Box marginLeft={2} flexDirection="row" flexWrap="wrap">
           <Text color={P.mute}>页 </Text>
           <Text color={P.yellow} bold>{file.pages.length}</Text>
           <Text color={P.mute}> · 全片 </Text>
@@ -578,73 +707,73 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
         </Box>
       </Box>
 
-      {/* 视图页签（flexWrap：窄屏自动折行） */}
+      {/* 分隔线 */}
+      <Hr />
+
+      {/* ② 视图页签（1-6 切换；窄屏自动折行） */}
       <Box marginTop={1} flexDirection="row" flexWrap="wrap">
-        {(Object.keys(VIEW_LABEL) as View[]).map((v) => {
+        {(Object.keys(VIEW_LABEL) as View[]).map((v, i) => {
           const active = state.view === v;
           return (
-            <Box key={v} marginRight={1} marginY={0} paddingX={1} backgroundColor={active ? P.panelActive : P.panel}>
-              <Text color={active ? '#ffffff' : P.mute} bold={active}>{VIEW_LABEL[v]}</Text>
-              <Text color={active ? '#ffffff' : P.mute}>[{v === 'pages' ? '1' : v === 'shared' ? '2' : v === 'components' ? '3' : v === 'assets' ? '4' : '5'}]</Text>
+            <Box key={v} marginRight={1} marginY={0} paddingX={1} backgroundColor={active ? P.active : P.panel}>
+              <Text color={active ? '#ffffff' : P.mute} bold={active}>[{i + 1}] {VIEW_LABEL[v]}</Text>
             </Box>
           );
         })}
       </Box>
 
-      {/* 主体 */}
-      <Box marginTop={1} flexGrow={1}>
+      {/* ③ 主体（flexGrow 占满剩余高度；内容超高在此内部裁剪，布局不被顶走） */}
+      <Box marginTop={1} flexGrow={1} flexShrink={1} overflowY="hidden">
         {session === 'fm' && fm ? (
-          <FmView cwd={fm.cwd} entries={fm.entries} sel={fm.sel} />
+          <FmView cwd={fm.cwd} entries={fm.entries} sel={fm.sel} limit={bodyLimit} pathInput={fmPath} />
         ) : state.view === 'pages' ? (
-          <PageView state={state} setState={setState} page={page} pages={pages} draft={draft} cursor={cursor} />
+          <PageView state={state} setState={setState} page={page} pages={pages} draft={draft} cursor={cursor} limit={bodyLimit} />
         ) : state.view === 'shared' ? (
-          <SharedView state={state} />
+          <SharedView state={state} limit={bodyLimit} />
         ) : state.view === 'components' ? (
-          <ComponentsView state={state} hasPages={hasPages} />
+          <ComponentsView state={state} hasPages={hasPages} limit={bodyLimit} />
         ) : state.view === 'assets' ? (
-          <AssetsView state={state} issues={assetIssues} ok={assetOk} />
+          <AssetsView state={state} issues={assetIssues} ok={assetOk} limit={bodyLimit} />
+        ) : state.view === 'log' ? (
+          <LogView state={state} limit={bodyLimit} />
         ) : (
-          <InfoView state={state} issues={report.issues} ok={report.ok} />
+          <InfoView state={state} issues={report.issues} ok={report.ok} limit={bodyLimit} />
         )}
       </Box>
 
-      {/* 进度 + 状态 */}
-      <Box marginTop={1} flexDirection="column">
+      {/* ④ 进度 + 状态（固定，长文本单行截断） */}
+      <Box marginTop={1} flexDirection="column" flexShrink={0}>
         {res.message ? (
           <Text color={P.green}>
             {'█'.repeat(Math.round(res.progress * 22))}
             {'░'.repeat(22 - Math.round(res.progress * 22))}
             <Text> </Text>
             <Text color={P.yellow}>{String(Math.round(res.progress * 100)).padStart(3)}%</Text>
-            <Text color={P.mute}>  {res.message}</Text>
+            <Text color={P.mute}>  {clip(res.message, statusW)}</Text>
           </Text>
         ) : null}
         {session && session !== 'fm' ? (
           <Box flexDirection="row" flexWrap="wrap">
             <Text color={P.amber} bold>{session === 'new' ? '新建工程' : '导入单页文件'}：</Text>
-            <Text color={P.text}>{draft.slice(0, cursor)}<Text color={P.green} bold>▏</Text>{draft.slice(cursor)}</Text>
+            <Text color={P.text}>
+              {draft.slice(Math.max(0, cursor - 40), cursor)}
+              <Text color={P.green} bold>▏</Text>
+              {draft.slice(cursor, cursor + 40)}
+            </Text>
             <Text color={P.mute}>  Enter 确认 · Esc 取消 · ←→ 移光标 · Backspace 删除</Text>
           </Box>
         ) : null}
         <Box flexDirection="row" flexWrap="wrap">
           {state.toast ? (
-            <Text color={P.amber}>◇ {state.toast}</Text>
+            <Text color={P.amber}>◇ {clip(state.toast, statusW)}</Text>
           ) : (
-            <>
-              <Text color={P.mute}>按键 1-5 切换视图；</Text>
-              <Text color={P.mute}>S 导出文案框架 · </Text>
-              <Text color={P.mute}>I 导入文案 · </Text>
-              <Text color={P.mute}>R 渲染视频 · </Text>
-              <Text color={P.mute}>Ctrl+S 保存回原文件 · </Text>
-              <Text color={P.mute}>V 校验 · </Text>
-              <Text color={P.mute}>T 资产体检</Text>
-            </>
+            <Text color={P.mute}>按键 1-6 切换视图；操作键见下方快捷键栏</Text>
           )}
         </Box>
       </Box>
 
-      {/* 快捷键栏（背景块；flexWrap 保证窄屏自动折行，键位不丢） */}
-      <Box marginTop={1} backgroundColor={P.panel} paddingX={2} flexDirection="row" flexWrap="wrap">
+      {/* ⑤ 快捷键栏（固定底部；flexWrap 保证窄屏自动折行，键位不丢） */}
+      <Box marginTop={1} backgroundColor={P.panel} paddingX={2} paddingY={1} flexDirection="row" flexWrap="wrap" flexShrink={0}>
         {state.view === 'pages' ? (
           <>
             <Key k="↑↓" t="选择页面" color={P.text} />
@@ -661,6 +790,8 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
           </>
         ) : state.view === 'shared' ? (
           <Key k="↑↓" t="浏览共享定义" color={P.text} />
+        ) : state.view === 'log' ? (
+          <Key k="↑↓" t="浏览操作日志" color={P.text} />
         ) : (
           <></>
         )}
@@ -672,12 +803,20 @@ export function TuiApp({ projectPath }: TuiAppProps): React.ReactElement {
   );
 }
 
+/** 分隔线：整行色块（宽度自动撑满容器，无需关心列数） */
+function Hr(): React.ReactElement {
+  return <Box height={1} backgroundColor={P.line} />;
+}
+
 /* ---------------- 视图子组件 ---------------- */
 
 function Panel({ title, children, active }: { title: string; children: React.ReactNode; active: boolean }): React.ReactElement {
   return (
-    <Box flexDirection="column" paddingX={1} paddingY={0} backgroundColor={active ? P.panelActive : P.panel} flexShrink={0}>
-      <Text bold color={active ? '#ffffff' : P.text}>{clip(title, 44)}</Text>
+    <Box flexDirection="column" paddingX={1} paddingY={0} backgroundColor={active ? P.active : P.panel} flexShrink={0}>
+      <Box flexDirection="row">
+        <Text bold color={active ? '#ffffff' : P.cyan}>▍</Text>
+        <Text bold color={active ? '#ffffff' : P.text}>{clip(title, 43)}</Text>
+      </Box>
       {children}
     </Box>
   );
@@ -690,11 +829,17 @@ function PageView(props: {
   pages: ReturnType<typeof pageRows>;
   draft: string;
   cursor: number;
+  limit: number;
 }): React.ReactElement {
-  const { state, setState, page, pages, draft, cursor } = props;
+  const { state, setState, page, pages, draft, cursor, limit } = props;
   const onPages = state.sub === 'pages';
   const onFields = state.sub === 'fields' || state.sub === 'edit';
   const fields = fieldsOfPage(page);
+  /** 动画摘要（并入详情标题，省去独立动画行，保证右栏不超高） */
+  const animHead = page && page.animations.length > 0 ? ` · ⚡${page.animations[0]!.effect}@${(page.animations[0]!.delay ?? 0).toFixed(1)}s` : '';
+  /** 左栏页面列表 / 右栏字段列表的可见窗口（选中项居中跟随，上下被隐藏部分给指示器） */
+  const pwin = viewWindow(pages.length, onPages ? state.pageIndex : -1, limit);
+  const fwin = viewWindow(fields.length, onFields ? state.fieldIndex : -1, limit);
 
   return (
     <Box flexDirection="row" width="100%">
@@ -703,42 +848,49 @@ function PageView(props: {
           {pages.length === 0 ? (
             <Text color={P.mute}>（无页面，O 打开 / N 新建）</Text>
           ) : (
-            pages.map(({ index, page: p, duration }) => {
-              const active = index === state.pageIndex && onPages;
-              const kindColor = KIND_COLOR[p.kind] ?? P.mute;
-              return (
-                <Box key={p.pageId} paddingY={0} backgroundColor={active ? P.panelActive : undefined} width="100%">
-                  <Text color={active ? 'white' : P.mute}>{active ? '▶ ' : '  '}{String(index + 1).padStart(2, '0')} </Text>
-                  <Text color={active ? 'white' : P.text} bold>{clip(p.name, 9)}</Text>
-                  <Text color={kindColor} bold> {KIND_TAG[p.kind] ?? p.kind}</Text>
-                  <Box justifyContent="flex-end" flexGrow={1}>
+            <>
+              <MoreHint n={pwin.moreTop} dir="top" />
+              {pages.slice(pwin.start, pwin.end).map(({ index, page: p, duration }) => {
+                const active = index === state.pageIndex && onPages;
+                const kindColor = KIND_COLOR[p.kind] ?? P.mute;
+                return (
+                  <Box key={p.pageId} paddingY={0} backgroundColor={active ? P.hilite : undefined} width="100%">
+                    <Text color={active ? P.yellow : P.mute}>{active ? '▶' : ' '} {String(index + 1).padStart(2, '0')} </Text>
+                    <Text color={active ? 'white' : P.text} bold>{clip(p.name, 9)}</Text>
+                    <Text color={kindColor} bold> {KIND_TAG[p.kind] ?? p.kind}</Text>
                     <Text color={active ? 'white' : P.mute}>{duration.toFixed(1)}s</Text>
                   </Box>
-                </Box>
-              );
-            })
+                );
+              })}
+              <MoreHint n={pwin.moreBottom} dir="bottom" />
+            </>
           )}
         </Box>
       </Panel>
 
       <Box flexGrow={1} marginLeft={1}>
-        <Panel title={`详情：${page?.name ?? '—'}${page ? ` · ${KIND_TAG[page.kind] ?? page.kind}` : ''}  ${onFields ? '●' : ''}`} active={onFields}>
+        <Panel
+          title={`详情：${page?.name ?? '—'}${page ? ` · ${KIND_TAG[page.kind] ?? page.kind}` : ''}${animHead}${onFields ? ' ●' : ''}`}
+          active={onFields}
+        >
           {page ? (
             <Box flexDirection="column">
-              {fields.map((f, i) => {
-                const focus = onFields && i === state.fieldIndex;
-                const editing = state.sub === 'edit' && i === state.fieldIndex;
+              {fields.length > 0 ? <MoreHint n={fwin.moreTop} dir="top" /> : null}
+              {fields.slice(fwin.start, fwin.end).map((f, i) => {
+                const idx = fwin.start + i;
+                const focus = onFields && idx === state.fieldIndex;
+                const editing = state.sub === 'edit' && idx === state.fieldIndex;
                 const kind = fieldKind(f.field);
                 const kindColor = kind === 'number' ? P.yellow : kind === 'boolean' ? P.cyan : kind === 'asset' ? P.pink : P.mute;
                 return (
                   <Box key={f.name} width="100%">
-                    <Box width={17} paddingX={1} backgroundColor={focus ? P.panelActive : undefined}>
+                    <Box width={17} paddingX={1} backgroundColor={focus ? P.hilite : undefined}>
                       <Text color={focus ? 'white' : P.mute}>{focus ? (editing ? '✎ ' : '❯ ') : '  '}{clip(f.name, 12)}</Text>
                     </Box>
-                    <Box width={7} backgroundColor={focus ? P.panelActive : undefined}>
+                    <Box width={7} backgroundColor={focus ? P.hilite : undefined}>
                       <Text color={kindColor} bold>{kind}</Text>
                     </Box>
-                    <Box flexGrow={1} backgroundColor={focus ? P.panelActive : undefined} paddingRight={1}>
+                    <Box flexGrow={1} backgroundColor={focus ? P.hilite : undefined} paddingRight={1}>
                       {editing ? (
                         <Text color={P.text}>{draft.slice(0, cursor)}<Text color={P.green} bold>▏</Text>{draft.slice(cursor)}</Text>
                       ) : (
@@ -749,14 +901,7 @@ function PageView(props: {
                 );
               })}
               {fields.length === 0 ? <Text color={P.mute}>（此页无可编辑字段）</Text> : null}
-              <Box marginTop={1}>
-                <Text color={P.mute}>⚡ 动画：</Text>
-                <Text color={P.amber}>
-                  {page.animations.length > 0
-                    ? page.animations.map((a) => `${a.effect}@${(a.delay ?? 0).toFixed(1)}s+${(a.duration ?? 0.8).toFixed(1)}s`).join(' · ')
-                    : '（无）'}
-                </Text>
-              </Box>
+              <MoreHint n={fwin.moreBottom} dir="bottom" />
             </Box>
           ) : (
             <Text color={P.mute}>（未打开工程）</Text>
@@ -767,17 +912,42 @@ function PageView(props: {
   );
 }
 
+/** 列表超出隐藏指示器：顶部「↑ 上方还有 N 项」/ 底部「↓ 下方还有 N 项」；N=0 不渲染 */
+function MoreHint({ n, dir }: { n: number; dir: 'top' | 'bottom' }): React.ReactElement | null {
+  if (n <= 0) return null;
+  return (
+    <Box paddingX={1}>
+      <Text color={P.amber}>{dir === 'top' ? `↑ 上方还有 ${n} 项` : `↓ 下方还有 ${n} 项`}</Text>
+    </Box>
+  );
+}
+
 /** 文件管理器视图（T5：浏览目录 + 打开工程；仅展示目录与可开工程条目） */
-function FmView({ cwd, entries, sel }: { cwd: string; entries: FmEntry[]; sel: number }): React.ReactElement {
+/** 长路径保留尾部（路径提示：开头可省略，末尾最关键） */
+function clipPathHead(s: string, n: number): string {
+  if (s.length <= n) return s;
+  return '…' + s.slice(s.length - Math.max(0, n - 1));
+}
+
+function FmView({ cwd, entries, sel, limit, pathInput }: { cwd: string; entries: FmEntry[]; sel: number; limit: number; pathInput: string | null }): React.ReactElement {
+  const { stdout } = useStdout();
+  const cols = stdout.columns ?? 80;
+  const win = viewWindow(entries.length, sel, limit);
   return (
     <Box flexDirection="column" width="100%">
-      <Panel title={`文件管理器 · 打开工程（${cwd}）`} active>
+      <Panel title="文件管理器 · 打开工程" active={false}>
         <Box flexDirection="column">
+          {/* 路径提示栏：当前位置一目了然；长路径省略开头保留末尾 */}
+          <Box paddingX={1} marginBottom={1}>
+            <Text color={P.cyan}>◈ {clipPathHead(cwd, Math.max(24, cols - 14))}</Text>
+          </Box>
+          <Box height={1} backgroundColor={P.line} />
           {entries.length === 0 ? <Text color={P.mute}>（空目录）</Text> : null}
-          {entries.map((e, i) => {
-            const active = i === sel;
+          <MoreHint n={win.moreTop} dir="top" />
+          {entries.slice(win.start, win.end).map((e, i) => {
+            const active = win.start + i === sel;
             return (
-              <Box key={e.name} paddingY={0} backgroundColor={active ? P.panelActive : undefined} width="100%">
+              <Box key={e.name} paddingY={0} backgroundColor={active ? P.hilite : undefined} width="100%">
                 <Text color={active ? 'white' : P.text}>{active ? '▶ ' : '  '}
                   {e.isDir ? '▸ ' : '  '}{clip(e.name, 40)}{e.isDir ? '/' : ''}</Text>
                 {!e.isDir ? (
@@ -788,43 +958,54 @@ function FmView({ cwd, entries, sel }: { cwd: string; entries: FmEntry[]; sel: n
               </Box>
             );
           })}
+          <MoreHint n={win.moreBottom} dir="bottom" />
+          {pathInput !== null ? (
+            <Box marginTop={1} paddingX={1} backgroundColor={P.active}>
+              <Text color="white">路径: {clip(pathInput, Math.max(10, cols - 24))}▍</Text>
+            </Box>
+          ) : null}
         </Box>
       </Panel>
       <Box marginY={1}>
-        <Text color={P.mute}>↑↓ 选择 · Enter 进入/打开 · Backspace 上级 · Esc 关闭（位置已记忆，下次从这开始）</Text>
+        <Text color={P.mute}>↑↓ 选择 · Enter 进入/打开 · Backspace 上级 · H 主目录 · / 输入路径 · Esc 关闭（位置已记忆）</Text>
       </Box>
     </Box>
   );
 }
 
-function SharedView({ state }: { state: TuiSnapshot }): React.ReactElement {
+function SharedView({ state, limit }: { state: TuiSnapshot; limit: number }): React.ReactElement {
   const { config } = Uragan.exportConfig(state.file);
   const keys = Object.keys(config.$shared);
   const sel = state.itemIndex;
   const selKey = keys[sel];
+  const win = viewWindow(keys.length, sel, limit);
   return (
     <Box flexDirection="row" width="100%">
-      <Panel title={`共享池 $shared（${keys.length} 项）`} active>
+      <Panel title={`共享池 $shared（${keys.length} 项）`} active={false}>
         <Box width={30} flexDirection="column">
           {keys.length === 0 ? (
             <Text color={P.mute}>（空，导出时自动去重生成）</Text>
           ) : (
-            keys.map((k, i) => (
-              <Box key={k} paddingY={0} backgroundColor={i === sel ? P.panelActive : undefined} width="100%">
-                <Text color={i === sel ? 'white' : P.text}>{i === sel ? '❯ ' : '  '}{clip(k, 24)}</Text>
-              </Box>
-            ))
+            <>
+              <MoreHint n={win.moreTop} dir="top" />
+              {keys.slice(win.start, win.end).map((k, i) => (
+                <Box key={k} paddingY={0} backgroundColor={win.start + i === sel ? P.hilite : undefined} width="100%">
+                  <Text color={win.start + i === sel ? 'white' : P.text}>{win.start + i === sel ? '❯ ' : '  '}{clip(k, 24)}</Text>
+                </Box>
+              ))}
+              <MoreHint n={win.moreBottom} dir="bottom" />
+            </>
           )}
         </Box>
       </Panel>
       <Box flexGrow={1} marginLeft={1}>
-        <Panel title={`定义详情${selKey ? ` · ${selKey}` : ''}`} active>
+        <Panel title={`定义详情${selKey ? ` · ${selKey}` : ''}`} active={false}>
           {selKey ? (
             <Box flexDirection="column" paddingX={1}>
               <Text color={P.text}>类型：<Text bold color={P.cyan}>{String(config.$shared[selKey]!.type)}</Text></Text>
               <Text color={P.text}>值：<Text color={P.yellow}>{defSummary(config.$shared[selKey])}</Text></Text>
               <Box marginTop={1}>
-                <Text color={P.mute}>被 {keys.filter((k) => k === selKey).length} 个定义共享（去重后）</Text>
+                <Text color={P.mute}>导出时作为共享定义（去重投影到 $shared）</Text>
               </Box>
             </Box>
           ) : (
@@ -836,28 +1017,33 @@ function SharedView({ state }: { state: TuiSnapshot }): React.ReactElement {
   );
 }
 
-function ComponentsView({ state, hasPages }: { state: TuiSnapshot; hasPages: boolean }): React.ReactElement {
+function ComponentsView({ state, hasPages, limit }: { state: TuiSnapshot; hasPages: boolean; limit: number }): React.ReactElement {
   const comps = state.file.components ?? [];
   const sel = state.itemIndex;
   const comp = comps[sel];
+  const win = viewWindow(comps.length, sel, limit);
   return (
     <Box flexDirection="row" width="100%">
-      <Panel title={`组件（${comps.length}）`} active>
+      <Panel title={`组件（${comps.length}）`} active={false}>
         <Box width={30} flexDirection="column">
           {comps.length === 0 ? (
             <Text color={P.mute}>（无组件）</Text>
           ) : (
-            comps.map((c, i) => (
-              <Box key={c.componentId} paddingY={0} backgroundColor={i === sel ? P.panelActive : undefined} width="100%">
-                <Text color={i === sel ? 'white' : P.text}>{i === sel ? '❯ ' : '  '}{clip(c.componentId, 14)}</Text>
-                <Text color={i === sel ? 'white' : P.mute}> {clip(c.name, 10)}</Text>
-              </Box>
-            ))
+            <>
+              <MoreHint n={win.moreTop} dir="top" />
+              {comps.slice(win.start, win.end).map((c, i) => (
+                <Box key={c.componentId} paddingY={0} backgroundColor={win.start + i === sel ? P.hilite : undefined} width="100%">
+                  <Text color={win.start + i === sel ? 'white' : P.text}>{win.start + i === sel ? '❯ ' : '  '}{clip(c.componentId, 14)}</Text>
+                  <Text color={win.start + i === sel ? 'white' : P.mute}> {clip(c.name, 10)}</Text>
+                </Box>
+              ))}
+              <MoreHint n={win.moreBottom} dir="bottom" />
+            </>
           )}
         </Box>
       </Panel>
       <Box flexGrow={1} marginLeft={1}>
-        <Panel title={`组件详情${comp ? ` · ${comp.componentId}` : ''}`} active>
+        <Panel title={`组件详情${comp ? ` · ${comp.componentId}` : ''}`} active={false}>
           {comp ? (
             <Box flexDirection="column" paddingX={1}>
               <Text color={P.text}>名称：<Text bold>{comp.name}</Text></Text>
@@ -882,7 +1068,7 @@ function ComponentsView({ state, hasPages }: { state: TuiSnapshot; hasPages: boo
   );
 }
 
-function AssetsView({ state, issues, ok }: { state: TuiSnapshot; issues: Issue[]; ok: boolean }): React.ReactElement {
+function AssetsView({ state, issues, ok, limit }: { state: TuiSnapshot; issues: Issue[]; ok: boolean; limit: number }): React.ReactElement {
   const [refs, setRefs] = React.useState<{ src: string; where: string }[]>([]);
   React.useEffect(() => {
     let alive = true;
@@ -898,22 +1084,26 @@ function AssetsView({ state, issues, ok }: { state: TuiSnapshot; issues: Issue[]
       alive = false;
     };
   }, [state.file]);
+  const win = viewWindow(refs.length, -1, limit);
   return (
     <Box flexDirection="row" width="100%">
-      <Panel title={`资产引用（${refs.length}）· T 体检`} active>
+      <Panel title={`资产引用（${refs.length}）· T 体检`} active={false}>
         <Box width={30} flexDirection="column">
           {refs.length === 0 ? (
             <Text color={P.mute}>（无资产引用）</Text>
           ) : (
-            refs.slice(0, 14).map((r, i) => (
-              <Text key={i} color={P.mute}>  {clip(r.src, 26)}</Text>
-            ))
+            <>
+              <MoreHint n={win.moreTop} dir="top" />
+              {refs.slice(win.start, win.end).map((r) => (
+                <Text key={r.src} color={P.mute}>  {clip(r.src, 26)}</Text>
+              ))}
+              <MoreHint n={win.moreBottom} dir="bottom" />
+            </>
           )}
-          {refs.length > 14 ? <Text color={P.mute}>  …（共 {refs.length} 条）</Text> : null}
         </Box>
       </Panel>
       <Box flexGrow={1} marginLeft={1}>
-        <Panel title="资产体检" active>
+        <Panel title="资产体检" active={false}>
           {refs.length > 0 ? (
             <Box flexDirection="column" paddingX={1}>
               <Text color={P.mute}>引用明细见左侧；按 T 执行体检（网络/本地可达性）</Text>
@@ -936,13 +1126,14 @@ function AssetsView({ state, issues, ok }: { state: TuiSnapshot; issues: Issue[]
   );
 }
 
-function InfoView({ state, issues, ok }: { state: TuiSnapshot; issues: Issue[]; ok: boolean }): React.ReactElement {
+function InfoView({ state, issues, ok, limit }: { state: TuiSnapshot; issues: Issue[]; ok: boolean; limit: number }): React.ReactElement {
   const file = state.file;
   const stats = file.pages.map((p) => ({ p, ...pageStats(p) }));
   const comps = file.components?.length ?? 0;
+  const win = viewWindow(stats.length, -1, limit);
   return (
     <Box flexDirection="row" width="100%">
-      <Panel title="工程信息" active>
+      <Panel title="工程信息" active={false}>
         <Box width={30} flexDirection="column" paddingX={1}>
           <InfoRow k="工程 ID" v={file.project.id} />
           <InfoRow k="名称" v={file.project.name} />
@@ -954,9 +1145,10 @@ function InfoView({ state, issues, ok }: { state: TuiSnapshot; issues: Issue[]; 
         </Box>
       </Panel>
       <Box flexGrow={1} marginLeft={1}>
-        <Panel title={`每页统计 · 校验 ${ok ? '通过' : '有错'}（V 重新校验）`} active>
+        <Panel title={`每页统计 · 校验 ${ok ? '通过' : '有错'}（V 重新校验）`} active={false}>
           <Box flexDirection="column" paddingX={1}>
-            {stats.map(({ p, fields, copy, animations }) => (
+            <MoreHint n={win.moreTop} dir="top" />
+            {stats.slice(win.start, win.end).map(({ p, fields, copy, animations }) => (
               <Box key={p.pageId} width="100%">
                 <Box width={16}><Text color={P.text} bold>{clip(p.name, 12)}</Text></Box>
                 <Box width={8}><Text color={P.mute}>{p.kind}</Text></Box>
@@ -967,6 +1159,7 @@ function InfoView({ state, issues, ok }: { state: TuiSnapshot; issues: Issue[]; 
               </Box>
             ))}
             {stats.length === 0 ? <Text color={P.mute}>（无页面）</Text> : null}
+            <MoreHint n={win.moreBottom} dir="bottom" />
             {issues.length > 0 ? (
               <Box marginTop={1} flexDirection="column">
                 {issues.slice(0, 10).map((i, n) => (
@@ -990,11 +1183,49 @@ function InfoRow({ k, v }: { k: string; v: string }): React.ReactElement {
   );
 }
 
+/** 日志视图（6）：操作日志（时间 + 级别配色），↑↓ 浏览历史，超出隐藏 + 上下提示 */
+function LogView({ state, limit }: { state: TuiSnapshot; limit: number }): React.ReactElement {
+  const { stdout } = useStdout();
+  const cols = stdout.columns ?? 80;
+  const log = state.log;
+  const sel = state.itemIndex;
+  const win = viewWindow(log.length, sel, limit);
+  const levelColor = (l: LogLevel): string => (l === 'ok' ? P.green : l === 'warn' ? P.amber : l === 'err' ? P.red : P.mute);
+  return (
+    <Box flexDirection="column" width="100%">
+      <Panel title={`日志 · 操作记录（${log.length} 条）`} active={false}>
+        <Box flexDirection="column">
+          {log.length === 0 ? (
+            <Text color={P.mute}>（暂无操作日志，打开/保存/校验/渲染等操作会记录在这里）</Text>
+          ) : (
+            <>
+              <MoreHint n={win.moreTop} dir="top" />
+              {log.slice(win.start, win.end).map((e, i) => {
+                const idx = win.start + i;
+                return (
+                  <Box key={idx} width="100%" backgroundColor={idx === sel ? P.hilite : undefined} paddingX={1}>
+                    <Text color={P.mute}>{e.time} </Text>
+                    <Text color={levelColor(e.level)}>{clip(e.msg, Math.max(20, cols - 20))}</Text>
+                  </Box>
+                );
+              })}
+              <MoreHint n={win.moreBottom} dir="bottom" />
+            </>
+          )}
+        </Box>
+      </Panel>
+      <Box marginY={1}>
+        <Text color={P.mute}>↑↓ 浏览历史 · 最新日志在底部（进入视图时自动定位）</Text>
+      </Box>
+    </Box>
+  );
+}
+
 /** 快捷键项：键帽（深底 + 分类色）+ 完整说明；窄屏随容器换行 */
 function Key({ k, t, color = P.yellow }: { k: string; t: string; color?: string }): React.ReactElement {
   return (
-    <Box marginRight={1} marginY={0}>
-      <Box backgroundColor="#0b1220" paddingX={1}>
+    <Box marginRight={2} marginY={0}>
+      <Box backgroundColor={P.keyCap} paddingX={1}>
         <Text bold color={color}>{k}</Text>
       </Box>
       <Text color={P.mute}> {t}</Text>
@@ -1008,6 +1239,8 @@ function listLength(s: TuiSnapshot): number {
       return Object.keys(Uragan.exportConfig(s.file).config.$shared).length;
     case 'components':
       return s.file.components?.length ?? 0;
+    case 'log':
+      return s.log.length;
     default:
       return 1; // pages/info/assets 无条目选中
   }

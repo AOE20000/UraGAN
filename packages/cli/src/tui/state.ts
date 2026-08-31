@@ -6,8 +6,19 @@ import { Uragan } from '@uragan/core';
  * 页面列表/选中/移动、字段提取、值类型转换。
  */
 
-/** 左侧主视图 */
-export type View = 'pages' | 'shared' | 'components' | 'assets' | 'info';
+/** 左侧主视图（1-6） */
+export type View = 'pages' | 'shared' | 'components' | 'assets' | 'info' | 'log';
+
+/** 操作日志级别 */
+export type LogLevel = 'info' | 'ok' | 'warn' | 'err';
+
+/** 日志视图（6）的一条操作日志 */
+export interface LogEntry {
+  /** HH:MM:SS */
+  time: string;
+  msg: string;
+  level: LogLevel;
+}
 
 export interface TuiSnapshot {
   projectPath: string;
@@ -26,14 +37,24 @@ export interface TuiSnapshot {
   sub: 'pages' | 'fields' | 'edit';
   /** 当前左侧主视图 */
   view: View;
-  /** 其他视图（shared/components/assets/info）中的选中条目下标 */
+  /** 其他视图（shared/components/assets/info/log）中的选中条目下标 */
   itemIndex: number;
   /** 最近一次操作反馈（空串不显示） */
   toast: string;
+  /** 操作日志（日志视图展示；旧条目超上限时丢弃） */
+  log: LogEntry[];
 }
 
 export function snapshot(projectPath: string, file: ProjectFile, durablePath?: string): TuiSnapshot {
-  return { projectPath, durablePath, dirty: false, file, pageIndex: 0, fieldIndex: 0, sub: 'pages', view: 'pages', itemIndex: 0, toast: '' };
+  return { projectPath, durablePath, dirty: false, file, pageIndex: 0, fieldIndex: 0, sub: 'pages', view: 'pages', itemIndex: 0, toast: '', log: [] };
+}
+
+/** 追加一条操作日志（time 用本机时钟 HH:MM:SS；超过 max 条丢弃最旧的） */
+export function pushLog(log: LogEntry[], msg: string, level: LogLevel = 'info', max = 200): LogEntry[] {
+  const d = new Date();
+  const time = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+  const next = [...log, { time, msg, level }];
+  return next.length > max ? next.slice(next.length - max) : next;
 }
 
 /** 空载态工程标记：project.id === 'none'（未打开工程 / 已关闭工程） */
@@ -61,6 +82,7 @@ export const VIEW_LABEL: Record<View, string> = {
   components: '组件',
   assets: '资产',
   info: '信息',
+  log: '日志',
 };
 
 export const selectedPage = (s: TuiSnapshot): Page | undefined => s.file.pages[s.pageIndex];
@@ -244,6 +266,27 @@ export function displayValue(field: ContentField): string {
 export function clip(s: string, n: number): string {
   if (s.length <= n) return s;
   return s.slice(0, Math.max(0, n - 1)) + '…';
+}
+
+/**
+ * 视口窗口（列表超出隐藏 + 上下提示）：
+ * 返回 [start, end) 可见区间，保证选中项 sel 可见（尽量居中）；
+ * moreTop / moreBottom 为顶部/底部被隐藏的条数，>0 时渲染「上方/下方还有 N 项」指示器。
+ * 纯函数，便于单测。
+ */
+export interface ViewWindow {
+  start: number;
+  end: number;
+  moreTop: number;
+  moreBottom: number;
+}
+export function viewWindow(total: number, sel: number, limit: number): ViewWindow {
+  if (total <= 0 || limit <= 0) return { start: 0, end: 0, moreTop: 0, moreBottom: 0 };
+  if (total <= limit) return { start: 0, end: total, moreTop: 0, moreBottom: 0 };
+  const half = Math.floor((limit - 1) / 2);
+  let start = (sel < 0 ? 0 : sel) - half; // sel < 0（无选中）时从头显示
+  start = Math.max(0, Math.min(start, total - limit));
+  return { start, end: start + limit, moreTop: start, moreBottom: total - (start + limit) };
 }
 
 /** 定义 → 人类可读摘要（信息/共享池/组件视图展示） */

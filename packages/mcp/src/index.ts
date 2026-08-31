@@ -45,14 +45,14 @@ function registerAll(server: McpServer): void {
 
   reg(
     'project_new',
-    '创建空白工程（步骤0）：生成 <名字>.uragan 目录工程（每页一个独立文件）',
+    '新建空白工程（步骤 0）：生成 <名字>.uragan 目录工程，每页一个独立文件',
     { path: pathOpt(), name: z.string().optional(), canvas: z.string().optional(), fps: z.number().optional() },
     (a: { path?: string; name?: string; canvas?: string; fps?: number }) => projectNew(a),
   );
 
   reg(
     'project_import',
-    '用交换配置（$shared 形态）整体创建或覆盖工程（步骤2 导入展开）：可指定输出工程名，也可覆盖已存在的工程。'
+    '导入交换配置（$shared 形态）整体创建或覆盖工程（步骤 2 导入展开）：可指定输出工程名，也可覆盖已存在的工程。'
       + '与「打开工程」不同 —— 打开 .uragan 单文件是导入到 <名字>.uragan.work 工作目录、原文件保留为持久文件。',
     { configPath: z.string(), out: pathOpt() },
     (a: { configPath: string; out?: string }) => projectImport(a),
@@ -60,8 +60,8 @@ function registerAll(server: McpServer): void {
 
   reg(
     'project_export',
-    '导出整体交换配置（步骤2 反向）：把各页重复的定义去重投影成 $shared 共享池，'
-      + '适合一次性整体改主色/字体等共享值。这只是导出去改的视图，工程本体仍在工程目录里。',
+    '导出整体交换配置（步骤 2 反向）：把各页重复的定义去重投影成 $shared 共享池，'
+      + '适合一次性整体改主色/字体等共享值。这只是导出去修改的视图，工程本体仍在工程目录里。',
     { path: pathOpt(), out: pathOpt() },
     (a: { path?: string; out?: string }) => projectExport(a),
   );
@@ -73,34 +73,34 @@ function registerAll(server: McpServer): void {
     (a: { path?: string }) => validate(a.path),
   );
 
-  reg('list_pages', '按播放顺序列出页面（步骤3）', { path: pathOpt() }, (a: { path?: string }) => listPages(a.path));
+  reg('list_pages', '按播放顺序列出页面（步骤 3）', { path: pathOpt() }, (a: { path?: string }) => listPages(a.path));
 
-  reg('reorder_pages', '调整播放顺序（挑选 + 排序，步骤3）', { path: pathOpt(), ids: z.array(z.string()) }, (a: { path?: string; ids: string[] }) => reorderPages(a));
+  reg('reorder_pages', '调整播放顺序（挑选 + 排序，步骤 3）', { path: pathOpt(), ids: z.array(z.string()) }, (a: { path?: string; ids: string[] }) => reorderPages(a));
 
   reg(
     'page_get',
-    '导出单个独立页（含头部 $defs，供 AI 修改）',
+    '导出单个独立页（含头部 $defs，供 AI 修改后整体覆盖）',
     { path: pathOpt(), pageId: z.string(), out: pathOpt() },
     (a: { path?: string; pageId: string; out?: string }) => pageGet(a),
   );
 
   reg(
     'page_overwrite',
-    '用独立页 JSON 暴力覆盖（含 $defs 校验）',
+    '用独立页 JSON 覆盖指定页（含 $defs 校验；pageId 不存在则追加为新页）',
     { path: pathOpt(), pageId: z.string(), pageJson: z.string() },
     (a: { path?: string; pageId: string; pageJson: string }) => pageOverwrite(a),
   );
 
   reg(
     'copy_export',
-    '导出待填充文案框架（format=json 权威形态，format=md 人读文本框架）',
+    '导出待填充文案框架（format=json 权威形态；format=md 人读文本表单，多行/代码走 f@编号 围栏块）',
     { path: pathOpt(), out: pathOpt(), format: z.enum(['json', 'md']).optional() },
     (a: { path?: string; out?: string; format?: 'json' | 'md' }) => copyExport(a),
   );
 
   reg(
     'copy_import',
-    '导入已填充文案框架（步骤5）',
+    '导入已填充文案框架（步骤 5；自动识别 JSON 权威形态与 Markdown 文本表单）',
     { path: pathOpt(), skeletonJson: z.string() },
     (a: { path?: string; skeletonJson: string }) => copyImport(a),
   );
@@ -125,7 +125,7 @@ function registerAll(server: McpServer): void {
 
   reg(
     'render_video',
-    '渲染视频（步骤6，Remotion → mp4）',
+    '渲染视频（步骤 6：Remotion 合成 → mp4，内置离线浏览器）',
     { path: pathOpt(), out: pathOpt(), codec: z.enum(['h264', 'h265', 'vp8', 'vp9']).optional() },
     (a: { path?: string; out?: string; codec?: 'h264' | 'h265' | 'vp8' | 'vp9' }) => renderVideo(a),
   );
@@ -138,14 +138,14 @@ export function createServer(): McpServer {
     {
       capabilities: { tools: {} },
       instructions: [
-        'UraGAN 动画视频生成：6 步闭环建议流程如下——',
-        '1) project_new 建空白目录工程，或 project_import 用交换配置整体创建/覆盖工程；',
-        '2) list_pages → reorder_pages 挑选并排序播放顺序；',
-        '3) copy_export 导出文案框架 → 自行填充 → copy_import 填回；',
-        '4) render_video 出片。',
+        'UraGAN 动画视频生成框架：建议按 6 步闭环操作——',
+        '① project_new 新建空白工程，或 project_import 用交换配置（$shared 形态）整体创建/覆盖工程；',
+        '② list_pages → reorder_pages 挑选并排序播放顺序；',
+        '③ copy_export 导出待填充文案框架 → 填充 → copy_import 填回；',
+        '④ render_video 合成最终视频。',
         '工程形态：目录工程 <名字>.uragan/（每页一个独立文件）；'
-          + '打开 .uragan 单文件时工程实际在 <名字>.uragan.work/ 工作目录中进行，原文件保留为持久文件，改动需显式导出回它。',
-        '改单页设计：page_get 拿到独立页 JSON → 修改 → page_overwrite 覆盖（pageId 不存在则追加为新页）；',
+          + '打开 .uragan 单文件时，工程在 <名字>.uragan.work/ 工作目录中进行，原文件保留为持久文件，改动需显式导出回它。',
+        '改单页设计：page_get 导出独立页 JSON → 修改 → page_overwrite 覆盖（pageId 不存在则追加为新页）；',
         '整体迭代设计：project_export 导出整体交换配置（$shared 去重视图）→ 修改共享值 → project_import 重新展开覆盖工程。',
       ].join('\n'),
     },

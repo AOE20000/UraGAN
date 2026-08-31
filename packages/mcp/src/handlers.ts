@@ -72,7 +72,7 @@ export function projectNew(a: ProjectNewArgs = {}): ToolResult {
   file.project.canvas = { width: Number(m[1]!), height: Number(m[2]!), fps: a.fps ?? 30 };
   const target = withProjectExt(a.path ?? 'project.uragan');
   writeProjectFile(target, file);
-  return ok(`已创建空工程 ${file.pages.length} 页 → ${target}`);
+  return ok(`✓ 已创建空工程（${file.pages.length} 页）→ ${target}`);
 }
 
 /* ---------------- 1/2 导入 / 导出 / 校验 ---------------- */
@@ -92,7 +92,7 @@ export function projectImport(a: ProjectImportArgs): ToolResult {
   if (!report.ok) return fail(reportText(report, '导入失败'));
   const target = withProjectExt(a.out ?? 'project.uragan');
   writeProjectFile(target, file);
-  return ok(`已导入 ${file.pages.length} 个页面 → ${target}${report.errors.length > 0 ? '\n' + reportText(report, '') : ''}`);
+  return ok(`✓ 已导入 ${file.pages.length} 个页面 → ${target}${report.errors.length > 0 ? '\n' + reportText(report, '') : ''}`);
 }
 
 export interface ProjectExportArgs {
@@ -107,7 +107,7 @@ export function projectExport(a: ProjectExportArgs = {}): ToolResult {
   const json = JSON.stringify(config, null, 2);
   if (a.out) {
     write(a.out, config);
-    return ok(`已导出整体交换配置（$shared ${Object.keys(config.$shared).length} 项）→ ${withProjectExt(a.out)}`);
+    return ok(`✓ 已导出整体交换配置（$shared ${Object.keys(config.$shared).length} 项）→ ${withProjectExt(a.out)}`);
   }
   return ok(json);
 }
@@ -116,7 +116,7 @@ export function validate(path = 'project.uragan'): ToolResult {
   const r = load(path);
   if (!r.ok) return r;
   const report = Uragan.exportConfig(r.file).report;
-  return report.errors.length === 0 ? ok(`配置有效（${report.errors.length} 处提醒）`) : fail(reportText(report, ''));
+  return report.errors.length === 0 ? ok(`✓ 配置有效（${report.errors.length} 处提醒）`) : fail(reportText(report, ''));
 }
 
 /* ---------------- 3 选择排序 / 页面 ---------------- */
@@ -138,7 +138,7 @@ export function reorderPages(a: ReorderPagesArgs): ToolResult {
   const { file, report } = Uragan.reorder(r.file, a.ids);
   if (!report.ok) return fail(reportText(report, '调整失败'));
   save(r, file);
-  return ok(`已调整顺序：${file.pages.map((p) => p.pageId).join(' → ')}`);
+  return ok(`✓ 已调整顺序：${file.pages.map((p) => p.pageId).join(' → ')}`);
 }
 
 export interface PageGetArgs {
@@ -154,7 +154,7 @@ export function pageGet(a: PageGetArgs): ToolResult {
   const json = JSON.stringify(p, null, 2);
   if (a.out) {
     writeFileSync(a.out, json + '\n', 'utf8');
-    return ok(`已导出 ${a.pageId} → ${a.out}`);
+    return ok(`✓ 已导出 ${a.pageId} → ${a.out}`);
   }
   return ok(json);
 }
@@ -179,7 +179,7 @@ export function pageOverwrite(a: PageOverwriteArgs): ToolResult {
   const { file, report } = Uragan.overwritePage(r.file, input);
   if (!report.ok) return fail(reportText(report, '覆盖失败'));
   save(r, file);
-  return ok(`已覆盖页 ${a.pageId}`);
+  return ok(`✓ 已覆盖页 ${a.pageId}`);
 }
 
 /* ---------------- 4/5 文案框架 ---------------- */
@@ -197,7 +197,7 @@ export function copyExport(a: CopyExportArgs = {}): ToolResult {
     const { text } = exportSkeletonText(r.file);
     if (a.out) {
       writeFileSync(a.out, text, 'utf8');
-      return ok(`已导出文本文案框架 → ${a.out}`);
+      return ok(`✓ 已导出文本文案框架 → ${a.out}`);
     }
     return ok(text);
   }
@@ -206,7 +206,7 @@ export function copyExport(a: CopyExportArgs = {}): ToolResult {
   if (a.out) {
     writeFileSync(a.out, json + '\n', 'utf8');
     const n = skeleton.pages.reduce((s, p) => s + p.items.length, 0);
-    return ok(`已导出文案框架（${n} 个占位符）→ ${a.out}`);
+    return ok(`✓ 已导出文案框架（${n} 个占位符）→ ${a.out}`);
   }
   return ok(json);
 }
@@ -230,7 +230,7 @@ export function copyImport(a: CopyImportArgs): ToolResult {
   const { file, report } = Uragan.applySkeleton(r.file, skeleton as Parameters<typeof Uragan.applySkeleton>[1]);
   if (!report.ok) return fail(reportText(report, '文案填充失败'));
   save(r, file);
-  return ok('文案填充完成');
+  return ok('✓ 文案填充完成');
 }
 
 /* ---------------- 共享池 / 资产 / 渲染 / 组件 ---------------- */
@@ -272,8 +272,8 @@ export function componentInline(a: ComponentInlineArgs): ToolResult {
   save(r, file);
   const warns = report.errors.filter((e) => e.severity === 'warning');
   return warns.length > 0
-    ? ok(`已内联组件 ${a.componentId} → 页 ${a.pageId}\n⚠ ${warns.map((w) => `[${w.code}] ${w.message}`).join('\n⚠ ')}`)
-    : ok(`已内联组件 ${a.componentId} → 页 ${a.pageId}`);
+    ? ok(`✓ 已内联组件 ${a.componentId} → 页 ${a.pageId}\n⚠ ${warns.map((w) => `[${w.code}] ${w.message}`).join('\n⚠ ')}`)
+    : ok(`✓ 已内联组件 ${a.componentId} → 页 ${a.pageId}`);
 }
 
 export interface RenderVideoArgs {
@@ -293,7 +293,7 @@ export async function renderVideo(a: RenderVideoArgs = {}): Promise<ToolResult> 
     });
     return ok(`✓ 渲染完成 → ${output}（${durationSeconds.toFixed(1)}s）`);
   } catch (e: unknown) {
-    return fail(`渲染失败：${(e as Error).message}`);
+    return fail(`✗ 渲染失败：${(e as Error).message}`);
   }
 }
 
@@ -306,6 +306,6 @@ export async function assetsCheck(a: AssetsCheckArgs = {}): Promise<ToolResult> 
   const { checkAssets } = await import('@uragan/render');
   const { ok: pass, issues } = await checkAssets(r.file, r.dir, 'assets');
   if (issues.length === 0) return ok('✓ 资产引用全部有效');
-  const lines = issues.map((i) => `${i.severity === 'error' ? '[error]' : '[warn ]'} [${i.code}] ${i.message} @${i.path}`);
+  const lines = issues.map((i) => `${i.severity === 'error' ? '✗' : '⚠'} [${i.code}] ${i.message} @${i.path}`);
   return pass ? ok(lines.join('\n')) : fail(lines.join('\n'));
 }

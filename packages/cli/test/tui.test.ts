@@ -21,6 +21,7 @@ import {
   selectedPage,
   sortFm,
   VIEW_LABEL,
+  viewWindow,
   type TuiSnapshot,
 } from '../src/tui/state.js';
 
@@ -39,7 +40,7 @@ function sampleFile() {
 
 describe('TUI 状态层（state.ts）', () => {
   const file = sampleFile();
-  const snap: TuiSnapshot = { projectPath: 'x.uragan', dirty: false, file, pageIndex: 1, fieldIndex: 0, sub: 'pages', view: 'pages', itemIndex: 0, toast: '' };
+  const snap: TuiSnapshot = { projectPath: 'x.uragan', dirty: false, file, pageIndex: 1, fieldIndex: 0, sub: 'pages', view: 'pages', itemIndex: 0, toast: '', log: [] };
 
   it('moveUp/moveDown 交换页面顺序（不修改 in place）', () => {
     const up = moveUp(sampleFile(), 1);
@@ -70,7 +71,7 @@ describe('TUI 状态层（state.ts）', () => {
   });
 
   it('fieldKind / displayValue / clip', () => {
-    const f = selectedField({ projectPath: '', dirty: false, file, pageIndex: 0, fieldIndex: 0, sub: 'fields', view: 'pages', itemIndex: 0, toast: '' })!;
+    const f = selectedField({ projectPath: '', dirty: false, file, pageIndex: 0, fieldIndex: 0, sub: 'fields', view: 'pages', itemIndex: 0, toast: '', log: [] })!;
     expect(fieldKind(f.field)).toBe('text');
     expect(displayValue(f.field)).toBe('你的品牌');
     const count = fieldsOfPage(file.pages[0]!)[1]!;
@@ -108,14 +109,15 @@ describe('TUI 快捷键清单（SHORTCUTS 完整、不简写、无「骨架」�
   });
 });
 
-describe('TUI 视图（VIEW_LABEL 5 个齐全）', () => {
-  it('页面/共享池/组件/资产/信息 视图齐全', () => {
-    expect(Object.keys(VIEW_LABEL).sort()).toEqual(['assets', 'components', 'info', 'pages', 'shared'].sort());
+describe('TUI 视图（VIEW_LABEL 6 个齐全：6 为日志，无终端）', () => {
+  it('页面/共享池/组件/资产/信息/日志 视图齐全且不含终端', () => {
+    expect(Object.keys(VIEW_LABEL).sort()).toEqual(['assets', 'components', 'info', 'log', 'pages', 'shared'].sort());
     expect(VIEW_LABEL.pages).toBe('页面');
     expect(VIEW_LABEL.shared).toBe('共享池');
     expect(VIEW_LABEL.components).toBe('组件');
     expect(VIEW_LABEL.assets).toBe('资产');
     expect(VIEW_LABEL.info).toBe('信息');
+    expect(VIEW_LABEL.log).toBe('日志');
   });
 
   it('TuiApp 组件可导入（供真实终端渲染）', () => {
@@ -202,8 +204,7 @@ describe('TUI 文件管理器（T5：排序 / 可开工程判定 / 上次位置�
   });
 });
 
-describe('TUI 页组锁定（整体文件直接移入：页面1动、页面2跟着动）', () => {
-  function groupedFile() {
+describe('TUI 页组锁定（整体文件直接移入：页面1动、页面2跟着动）', () => {  function groupedFile() {
     const f = sampleFile();
     f.pages.push({ pageId: 'p03_extra', name: '外部页', kind: 'chart', $defs: {}, content: { value: { cid: 'c0091', copy: true, kind: 'number', value: 1 } }, animations: [] });
     f.project.pageGroups = [{ id: 'campaign', pages: ['p02_feature', 'p03_extra'] }];
@@ -234,5 +235,32 @@ describe('TUI 页组锁定（整体文件直接移入：页面1动、页面2跟�
     expect(moveUp(f, 1).pages.map((p) => p.pageId)).toEqual(['p02_feature', 'p01_home']);
     expect(moveDown(f, 0).pages.map((p) => p.pageId)).toEqual(['p02_feature', 'p01_home']);
     expect(moveUp(f, 0)).toBe(f);
+  });
+});
+
+describe('TUI 视口窗口（viewWindow：超出隐藏 + 上下提示）', () => {
+  it('总数不超过可视行数：全部显示，无上下提示', () => {
+    expect(viewWindow(3, 1, 8)).toEqual({ start: 0, end: 3, moreTop: 0, moreBottom: 0 });
+    expect(viewWindow(0, 0, 8)).toEqual({ start: 0, end: 0, moreTop: 0, moreBottom: 0 });
+  });
+
+  it('选中在顶部/底部时窗口贴边，另一端给提示', () => {
+    expect(viewWindow(10, 0, 4)).toEqual({ start: 0, end: 4, moreTop: 0, moreBottom: 6 });
+    expect(viewWindow(10, 9, 4)).toEqual({ start: 6, end: 10, moreTop: 6, moreBottom: 0 });
+  });
+
+  it('选中在中间时尽量居中，上下都有提示', () => {
+    expect(viewWindow(10, 5, 4)).toEqual({ start: 4, end: 8, moreTop: 4, moreBottom: 2 });
+  });
+
+  it('无选中（sel < 0）时从头显示', () => {
+    expect(viewWindow(30, -1, 8).start).toBe(0);
+    expect(viewWindow(30, -1, 8).moreTop).toBe(0);
+    expect(viewWindow(30, -1, 8).moreBottom).toBe(22);
+  });
+
+  it('limit <= 0 或 total <= 0：空窗口', () => {
+    expect(viewWindow(5, 0, 0)).toEqual({ start: 0, end: 0, moreTop: 0, moreBottom: 0 });
+    expect(viewWindow(0, 0, 0)).toEqual({ start: 0, end: 0, moreTop: 0, moreBottom: 0 });
   });
 });

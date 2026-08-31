@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
 import React from 'react';
 import { render } from 'ink';
@@ -92,6 +92,17 @@ describe('TUI 启动（回归：工程打不开时不得卡在「正在启动…
   });
 });
 
+describe('TUI 视图 6=日志（回归：终端已移除，日志占位第 6 视图）', () => {
+  it('按 6 → 操作日志；界面无「终端」视图页签', async () => {
+    const target = realProjectInTmp();
+    const v6 = await renderCollect(React.createElement(TuiApp, { projectPath: target }), 400, ['6']);
+    expect(v6.text).toContain('日志 · 操作记录');
+    expect(v6.text).not.toContain('终端 · 透传');
+    expect(v6.text).not.toContain('[7] 终端');
+    rmSync(dirname(target), { recursive: true, force: true });
+  });
+});
+
 describe('TUI 持久文件工作流（.uragan → <源名>.uragan.work 工作目录）', () => {
   it('打开 .uragan：派生工作目录；改字段后标记未保存；Ctrl+S 导出回原文件', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'uragan-tui-durable-'));
@@ -177,6 +188,59 @@ describe('TUI 交互（回归：文件管理器回车打开 legacy 单文件不�
     expect(last.split('导入单页文件').length - 1).toBe(1); // 同一帧里只有一个 U
     expect(last).toContain('导出单页文件'); // G 与 U 成对出现在页面视图上下文键位
     rmSync(dirname(target), { recursive: true, force: true });
+  });
+});
+
+describe('TUI 文件管理器（回归：路径栏 / 全部文件展示 / 路径直达 / 主目录）', () => {
+  /** 造一个目录：工程文件 + 普通文件 + 子目录（验证 FM 不再只显示工程文件） */
+  function fmDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'uragan-fm-'));
+    writeFileSync(join(dir, 'demo.uragan'), JSON.stringify(readProjectFile(realProjectInTmp()).file), 'utf8');
+    writeFileSync(join(dir, 'notes.txt'), 'plain', 'utf8');
+    mkdirSync(join(dir, '子目录'), { recursive: true });
+    return dir;
+  }
+
+  it('O 打开 FM：显示路径提示栏（◈ 绝对路径）与文件管理器标题', async () => {
+    const dir = fmDir();
+    const target = join(dir, 'demo.uragan');
+    const { text } = await renderCollect(React.createElement(TuiApp, { projectPath: target }), 400, ['o']);
+    expect(text).toContain('文件管理器 · 打开工程');
+    expect(text).toContain('◈');
+    expect(text).toContain(dir); // 路径栏展示当前位置（绝对路径）
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('FM 展示目录内全部文件：普通文件打（文件）标、工程文件打（工程）标（不再过滤非工程文件）', async () => {
+    const dir = fmDir();
+    const target = join(dir, 'demo.uragan');
+    const { text } = await renderCollect(React.createElement(TuiApp, { projectPath: target }), 400, ['o']);
+    expect(text).toContain('notes.txt');
+    expect(text).toContain('（文件）');
+    expect(text).toContain('demo.uragan');
+    expect(text).toContain('（工程）');
+    expect(text).toContain('子目录');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('/ 路径直达：输入绝对路径跳转（回车进入该目录）', async () => {
+    const dir = fmDir();
+    const target = join(dir, 'demo.uragan');
+    const drive = process.cwd().slice(0, 3); // 当前盘符根，如 E:\（短路径，测试快）
+    const { text } = await renderCollect(React.createElement(TuiApp, { projectPath: target }), 400, ['o', '/', ...drive.split(''), '\r']);
+    expect(text).toContain('◈');
+    expect(text).toContain(drive.trimEnd());
+    expect(text).not.toContain('路径不存在');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('H 回到主目录（路径栏显示用户主目录）', async () => {
+    const dir = fmDir();
+    const target = join(dir, 'demo.uragan');
+    const home = homedir();
+    const { text } = await renderCollect(React.createElement(TuiApp, { projectPath: target }), 400, ['o', 'h']);
+    expect(text).toContain(home);
+    rmSync(dir, { recursive: true, force: true });
   });
 });
 

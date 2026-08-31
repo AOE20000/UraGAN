@@ -12,6 +12,7 @@
     "tui": "node packages/cli/dist/index.js tui -p project.uragan",
     "pack": "node scripts/package-portable.mjs",
     "pack:lite": "node scripts/package-portable.mjs --lite",
+    "pack:exe": "node scripts/package-exe.mjs",
     "pack:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-portable.ps1",
     "link:global": "cd packages/cli && pnpm link --global"
   },
@@ -20,7 +21,9 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "postject": "^1.0.0-alpha.6",
     "typescript": "^5.7.0",
-    "vitest": "^2.1.0"
+    "vitest": "^2.1.0",
+    "webpack": "^5.110.2"
   }
 }
